@@ -1,0 +1,13 @@
+{
+  "name": "trunk-practice",
+  "version": "0.0.0",
+  "description": "Trunk-based workflow practice repository",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VirdocsSoftware/trunk-practice.git"
+  },
+  "author": "Verba Engineering",
+  "license": "UNLICENSED"
+}
+

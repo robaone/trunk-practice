@@ -1,0 +1,10 @@
+name: Unit Test
+description: Runs unit tests for the sample calculator
+
+runs:
+  using: composite
+  steps:
+    - name: Run unit tests
+      shell: bash
+      run: echo "Running unit tests..."
+

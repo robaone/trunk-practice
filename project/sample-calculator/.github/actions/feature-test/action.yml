@@ -1,0 +1,10 @@
+name: Feature Test
+description: Runs feature tests for the sample calculator
+
+runs:
+  using: composite
+  steps:
+    - name: Run feature tests
+      shell: bash
+      run: echo "Running feature tests..."
+
