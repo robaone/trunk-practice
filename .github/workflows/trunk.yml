@@ -82,7 +82,8 @@ jobs:
       # - uses: ./project/my-project/.github/action/unit-test
       #   if: ${{ matrix.project == 'my-project' }}
       # ============================================================
-
+      - uses: ./project/sample-calculator/.github/actions/unit-test
+        if: ${{ matrix.project == 'sample-calculator' }}
       # Default unit tests for projects without custom actions
       - name: Run Default Unit Tests
         if: ${{ matrix.project != '.' }}
@@ -135,7 +136,8 @@ jobs:
       # - uses: ./project/my-project/.github/action/feature-test
       #   if: ${{ matrix.project == 'my-project' }}
       # ============================================================
-
+      - uses: ./project/sample-calculator/.github/actions/feature-test
+        if: ${{ matrix.project == 'sample-calculator' }}
       # Default feature tests for projects without custom actions
       - name: Run Default Feature Tests
         if: ${{ matrix.project != '.' }}
