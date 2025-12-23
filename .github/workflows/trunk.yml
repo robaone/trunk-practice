@@ -1,0 +1,200 @@
+name: Trunk CI/CD
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, labeled, ready_for_review]
+
+env:
+  NODE_VERSION: 22.x
+  PROJECT_ROOT: project
+
+jobs:
+  initialize:
+    name: Initialize
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false || (github.event.action == 'labeled' && contains(github.event.pull_request.labels.*.name, 'test')) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Cancel Previous Runs
+        if: ${{ github.ref != 'refs/heads/main' }}
+        uses: styfle/cancel-workflow-action@0.12.1
+        with:
+          access_token: ${{ github.token }}
+
+      - id: files
+        uses: tj-actions/changed-files@v45
+
+      - name: Get Latest Release
+        id: get_latest_release
+        run: |
+          latest_release=$(./tooling/scripts/get_latest_release.sh)
+          echo "Latest release is $latest_release"
+          echo "result=$latest_release" >> $GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Project Matrix
+        id: matrix
+        run: |
+          echo "## Modified Files"
+          echo "${{ steps.files.outputs.all_changed_files }}" | sed -E 's/ /\n/g'
+
+          # Generate matrix using the script
+          matrixStringifiedObject="$(echo "${{ steps.files.outputs.all_changed_files }}" | sed -E 's/ /\n/g' | node ./tooling/scripts/generate_matrix.js)"
+          echo "## Matrix Object"
+          echo "$matrixStringifiedObject"
+          echo "matrix=$matrixStringifiedObject" >> $GITHUB_OUTPUT
+
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      latest-release: ${{ steps.get_latest_release.outputs.result }}
+
+  unit-tests:
+    name: Unit Tests
+    needs: [initialize]
+    if: ${{ fromJson(needs.initialize.outputs.matrix).include[0] != null && github.event_name != 'push' }}
+    strategy:
+      matrix: ${{ fromJson(needs.initialize.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Check for Custom Unit Test Action
+        id: check_custom_action
+        run: |
+          if [ -f "project/${{ matrix.project }}/.github/action/unit-test/action.yml" ]; then
+            echo "has_custom_action=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_custom_action=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Custom Unit Test Action
+        if: ${{ steps.check_custom_action.outputs.has_custom_action == 'true' && matrix.project != '.' }}
+        uses: ./project/${{ matrix.project }}/.github/action/unit-test
+
+      - name: Run Default Unit Tests
+        if: ${{ steps.check_custom_action.outputs.has_custom_action == 'false' && matrix.project != '.' }}
+        run: |
+          if [ -f "package.json" ]; then
+            npm install
+            if [ "$(jq -r '.scripts["test"]' package.json)" != "null" ]; then
+              npm run test
+            else
+              echo "No test script found in package.json, skipping..."
+            fi
+          else
+            echo "No package.json found, skipping..."
+          fi
+        working-directory: project/${{ matrix.project }}
+
+      - name: Run Root Unit Tests
+        if: ${{ matrix.project == '.' }}
+        run: |
+          if [ -f "package.json" ]; then
+            npm install
+            if [ "$(jq -r '.scripts["test"]' package.json)" != "null" ]; then
+              npm run test
+            else
+              echo "No test script found in package.json, skipping..."
+            fi
+          else
+            echo "No package.json found at root, skipping..."
+          fi
+
+  feature-tests:
+    name: Feature Tests
+    needs: [initialize]
+    if: ${{ fromJson(needs.initialize.outputs.matrix).include[0] != null && github.event_name != 'push' }}
+    strategy:
+      matrix: ${{ fromJson(needs.initialize.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Check for Custom Feature Test Action
+        id: check_custom_action
+        run: |
+          if [ -f "project/${{ matrix.project }}/.github/action/feature-test/action.yml" ]; then
+            echo "has_custom_action=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_custom_action=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Custom Feature Test Action
+        if: ${{ steps.check_custom_action.outputs.has_custom_action == 'true' && matrix.project != '.' }}
+        uses: ./project/${{ matrix.project }}/.github/action/feature-test
+
+      - name: Run Default Feature Tests
+        if: ${{ steps.check_custom_action.outputs.has_custom_action == 'false' && matrix.project != '.' }}
+        run: |
+          if [ -f "package.json" ]; then
+            npm install
+            if [ "$(jq -r '.scripts["test:e2e"]' package.json)" != "null" ]; then
+              npm run test:e2e
+            else
+              echo "No test:e2e script found in package.json, skipping..."
+            fi
+          else
+            echo "No package.json found, skipping..."
+          fi
+        working-directory: project/${{ matrix.project }}
+
+      - name: Run Root Feature Tests
+        if: ${{ matrix.project == '.' }}
+        run: |
+          if [ -f "package.json" ]; then
+            npm install
+            if [ "$(jq -r '.scripts["test:e2e"]' package.json)" != "null" ]; then
+              npm run test:e2e
+            else
+              echo "No test:e2e script found in package.json, skipping..."
+            fi
+          else
+            echo "No package.json found at root, skipping..."
+          fi
+
+  update-pr-description:
+    name: Update PR Description
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' &&
+      github.base_ref == 'main' &&
+      (github.event.pull_request.draft == false || github.event.action == 'labeled') &&
+      (contains(github.event.pull_request.labels.*.name, 'auto-pr-description') || 
+       (github.event.action == 'labeled' && contains(github.event.pull_request.labels.*.name, 'test')))
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate PR Description
+        uses: VirdocsSoftware/github-actions/.github/actions/auto-pr-description@main
+        with:
+          gemini-api-key: ${{ secrets.GEMINI_API_KEY }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pr-number: ${{ github.event.pull_request.number }}
+          base-sha: ${{ github.event.pull_request.base.sha }}
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          jira-ticket-url-prefix: 'https://vitalsource.atlassian.net/browse/'
+

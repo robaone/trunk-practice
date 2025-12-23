@@ -1,0 +1,9 @@
+{
+  "git": {
+    "develop": "main",
+    "main": "main"
+  },
+  "jira": {
+    "domain": "virdocs.atlassian.net"
+  }
+}
