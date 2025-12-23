@@ -18,6 +18,9 @@ jobs:
     name: Initialize
     runs-on: ubuntu-latest
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false || (github.event.action == 'labeled' && contains(github.event.pull_request.labels.*.name, 'test')) }}
+    permissions:
+      actions: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
