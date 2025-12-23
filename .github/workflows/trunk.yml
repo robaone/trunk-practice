@@ -72,21 +72,17 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Check for Custom Unit Test Action
-        id: check_custom_action
-        run: |
-          if [ -f "project/${{ matrix.project }}/.github/action/unit-test/action.yml" ]; then
-            echo "has_custom_action=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_custom_action=false" >> $GITHUB_OUTPUT
-          fi
+      # ============================================================
+      # Project-specific unit test actions
+      # Add a new step for each project that has custom unit tests:
+      #
+      # - uses: ./project/my-project/.github/action/unit-test
+      #   if: ${{ matrix.project == 'my-project' }}
+      # ============================================================
 
-      - name: Run Custom Unit Test Action
-        if: ${{ steps.check_custom_action.outputs.has_custom_action == 'true' && matrix.project != '.' }}
-        uses: ./project/${{ matrix.project }}/.github/action/unit-test
-
+      # Default unit tests for projects without custom actions
       - name: Run Default Unit Tests
-        if: ${{ steps.check_custom_action.outputs.has_custom_action == 'false' && matrix.project != '.' }}
+        if: ${{ matrix.project != '.' }}
         run: |
           if [ -f "package.json" ]; then
             npm install
@@ -129,21 +125,17 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Check for Custom Feature Test Action
-        id: check_custom_action
-        run: |
-          if [ -f "project/${{ matrix.project }}/.github/action/feature-test/action.yml" ]; then
-            echo "has_custom_action=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_custom_action=false" >> $GITHUB_OUTPUT
-          fi
+      # ============================================================
+      # Project-specific feature test actions
+      # Add a new step for each project that has custom feature tests:
+      #
+      # - uses: ./project/my-project/.github/action/feature-test
+      #   if: ${{ matrix.project == 'my-project' }}
+      # ============================================================
 
-      - name: Run Custom Feature Test Action
-        if: ${{ steps.check_custom_action.outputs.has_custom_action == 'true' && matrix.project != '.' }}
-        uses: ./project/${{ matrix.project }}/.github/action/feature-test
-
+      # Default feature tests for projects without custom actions
       - name: Run Default Feature Tests
-        if: ${{ steps.check_custom_action.outputs.has_custom_action == 'false' && matrix.project != '.' }}
+        if: ${{ matrix.project != '.' }}
         run: |
           if [ -f "package.json" ]; then
             npm install
