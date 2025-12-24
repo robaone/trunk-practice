@@ -8,6 +8,8 @@ on:
     branches:
       - main
     types: [opened, synchronize, reopened, labeled, ready_for_review]
+  release:
+    types: [published]
 
 env:
   NODE_VERSION: 22.x
@@ -162,4 +164,88 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pr-number: ${{ github.event.pull_request.number }}
           jira-ticket-url-prefix: 'https://vitalsource.atlassian.net/browse/'
+
+  deploy-to-testing:
+    name: Deploy to Testing
+    needs: [initialize, unit-tests, feature-tests]
+    environment: testing
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && fromJson(needs.initialize.outputs.matrix).include[0] != null }}
+    strategy:
+      matrix: ${{ fromJson(needs.initialize.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # ============================================================
+      # Project-specific deploy actions
+      # Add a new step for each project that has custom deploy:
+      #
+      # - uses: ./project/my-project/.github/actions/deploy
+      #   if: ${{ matrix.project == 'my-project' }}
+      # ============================================================
+      - uses: ./project/sample-calculator/.github/actions/deploy
+        if: ${{ matrix.project == 'sample-calculator' && hashFiles('project/sample-calculator/.github/actions/deploy/action.yml') != '' }}
+
+      - name: Run Root Deploy Testing
+        if: ${{ matrix.project == '.' }}
+        run: |
+          if [ -f "package.json" ]; then
+            npm install
+            if [ "$(jq -r '.scripts["deploy:testing"]' package.json)" != "null" ]; then
+              npm run deploy:testing
+            else
+              echo "No deploy:testing script found in package.json, skipping..."
+            fi
+          else
+            echo "No package.json found at root, skipping..."
+          fi
+
+  deploy-to-production:
+    name: Deploy to Production
+    needs: [initialize]
+    environment: production
+    env:
+      RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+    if: ${{ github.event_name == 'release' && startsWith(github.ref, 'refs/tags/') && fromJson(needs.initialize.outputs.matrix).include[0] != null }}
+    strategy:
+      matrix: ${{ fromJson(needs.initialize.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # ============================================================
+      # Project-specific deploy actions
+      # Add a new step for each project that has custom deploy:
+      #
+      # - uses: ./project/my-project/.github/actions/deploy
+      #   if: ${{ matrix.project == 'my-project' }}
+      # ============================================================
+      - uses: ./project/sample-calculator/.github/actions/deploy
+        if: ${{ matrix.project == 'sample-calculator' && hashFiles('project/sample-calculator/.github/actions/deploy/action.yml') != '' }}
+
+      - name: Run Root Deploy Production
+        if: ${{ matrix.project == '.' }}
+        run: |
+          if [ -f "package.json" ]; then
+            npm install
+            if [ "$(jq -r '.scripts["deploy:production"]' package.json)" != "null" ]; then
+              npm run deploy:production
+            else
+              echo "No deploy:production script found in package.json, skipping..."
+            fi
+          else
+            echo "No package.json found at root, skipping..."
+          fi
 
