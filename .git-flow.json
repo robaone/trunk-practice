@@ -4,6 +4,6 @@
     "main": "main"
   },
   "jira": {
-    "domain": "virdocs.atlassian.net"
+    "domain": "vitalsource.atlassian.net"
   }
 }
