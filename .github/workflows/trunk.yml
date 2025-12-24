@@ -182,14 +182,14 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       # ============================================================
-      # Project-specific deploy-to-testing actions
-      # Add a new step for each project that has custom deploy:testing:
+      # Project-specific deploy actions
+      # Add a new step for each project that has custom deploy:
       #
-      # - uses: ./project/my-project/.github/actions/deploy-testing
+      # - uses: ./project/my-project/.github/actions/deploy
       #   if: ${{ matrix.project == 'my-project' }}
       # ============================================================
-      - uses: ./project/sample-calculator/.github/actions/deploy-testing
-        if: ${{ matrix.project == 'sample-calculator' && hashFiles('project/sample-calculator/.github/actions/deploy-testing/action.yml') != '' }}
+      - uses: ./project/sample-calculator/.github/actions/deploy
+        if: ${{ matrix.project == 'sample-calculator' && hashFiles('project/sample-calculator/.github/actions/deploy/action.yml') != '' }}
 
       - name: Run Root Deploy Testing
         if: ${{ matrix.project == '.' }}
@@ -226,14 +226,14 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       # ============================================================
-      # Project-specific deploy-to-production actions
-      # Add a new step for each project that has custom deploy:production:
+      # Project-specific deploy actions
+      # Add a new step for each project that has custom deploy:
       #
-      # - uses: ./project/my-project/.github/actions/deploy-production
+      # - uses: ./project/my-project/.github/actions/deploy
       #   if: ${{ matrix.project == 'my-project' }}
       # ============================================================
-      - uses: ./project/sample-calculator/.github/actions/deploy-production
-        if: ${{ matrix.project == 'sample-calculator' && hashFiles('project/sample-calculator/.github/actions/deploy-production/action.yml') != '' }}
+      - uses: ./project/sample-calculator/.github/actions/deploy
+        if: ${{ matrix.project == 'sample-calculator' && hashFiles('project/sample-calculator/.github/actions/deploy/action.yml') != '' }}
 
       - name: Run Root Deploy Production
         if: ${{ matrix.project == '.' }}
