@@ -7,4 +7,3 @@ runs:
     - name: Run unit tests
       shell: bash
       run: echo "Running unit tests..."
-
