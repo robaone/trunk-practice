@@ -65,7 +65,7 @@ jobs:
   unit-tests:
     name: Unit Tests
     needs: [initialize]
-    if: ${{ fromJson(needs.initialize.outputs.matrix).include[0] != null && github.event_name != 'push' }}
+    if: ${{ fromJson(needs.initialize.outputs.matrix).include[0] != null }}
     strategy:
       matrix: ${{ fromJson(needs.initialize.outputs.matrix) }}
     runs-on: ubuntu-latest
@@ -104,7 +104,7 @@ jobs:
   feature-tests:
     name: Feature Tests
     needs: [initialize]
-    if: ${{ fromJson(needs.initialize.outputs.matrix).include[0] != null && github.event_name != 'push' }}
+    if: ${{ fromJson(needs.initialize.outputs.matrix).include[0] != null }}
     strategy:
       matrix: ${{ fromJson(needs.initialize.outputs.matrix) }}
     runs-on: ubuntu-latest
