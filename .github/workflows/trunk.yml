@@ -19,7 +19,7 @@ jobs:
   initialize:
     name: Initialize
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false || (github.event.action == 'labeled' && (contains(github.event.pull_request.labels.*.name, 'test') || contains(github.event.pull_request.labels.*.name, 'deploy'))) }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false || ((contains(github.event.pull_request.labels.*.name, 'test') || contains(github.event.pull_request.labels.*.name, 'deploy'))) }}
     permissions:
       actions: write
       contents: read
