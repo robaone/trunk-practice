@@ -19,7 +19,10 @@ jobs:
   initialize:
     name: Initialize
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false || (github.event.action == 'labeled' && contains(github.event.pull_request.labels.*.name, 'test')) }}
+    if: |
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.draft == false && github.event.action != 'labeled') ||
+      (github.event.action == 'labeled' && (github.event.label.name == 'test' || github.event.label.name == 'deploy'))
     permissions:
       actions: write
       contents: read
@@ -42,7 +45,7 @@ jobs:
         run: |
           latest_release=$(./tooling/scripts/get_latest_release.sh)
           echo "Latest release is $latest_release"
-          echo "result=$latest_release" >> $GITHUB_OUTPUT
+          echo "result=$latest_release" >> "$GITHUB_OUTPUT"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -56,7 +59,7 @@ jobs:
           matrixStringifiedObject="$(echo "${{ steps.files.outputs.all_changed_files }}" | sed -E 's/ /\n/g' | node ./tooling/scripts/generate_matrix.js)"
           echo "## Matrix Object"
           echo "$matrixStringifiedObject"
-          echo "matrix=$matrixStringifiedObject" >> $GITHUB_OUTPUT
+          echo "matrix=$matrixStringifiedObject" >> "$GITHUB_OUTPUT"
 
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
@@ -143,12 +146,7 @@ jobs:
   update-pr-description:
     name: Update PR Description
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'pull_request' &&
-      github.base_ref == 'main' &&
-      (github.event.pull_request.draft == false || github.event.action == 'labeled') &&
-      (contains(github.event.pull_request.labels.*.name, 'auto-pr-description') || 
-       (github.event.action == 'labeled' && contains(github.event.pull_request.labels.*.name, 'test')))
+    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'auto-pr-description')
     permissions:
       pull-requests: write
       contents: read
@@ -169,7 +167,12 @@ jobs:
     name: Deploy to Testing
     needs: [initialize, unit-tests, feature-tests]
     environment: testing
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && fromJson(needs.initialize.outputs.matrix).include[0] != null }}
+    if: |
+      fromJson(needs.initialize.outputs.matrix).include[0] != null &&
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'deploy'))
+      )
     strategy:
       matrix: ${{ fromJson(needs.initialize.outputs.matrix) }}
     runs-on: ubuntu-latest
