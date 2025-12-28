@@ -143,12 +143,7 @@ jobs:
   update-pr-description:
     name: Update PR Description
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'pull_request' &&
-      github.base_ref == 'main' &&
-      (github.event.pull_request.draft == false || github.event.action == 'labeled') &&
-      (contains(github.event.pull_request.labels.*.name, 'auto-pr-description') || 
-       (github.event.action == 'labeled' && contains(github.event.pull_request.labels.*.name, 'test')))
+    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'auto-pr-description')
     permissions:
       pull-requests: write
       contents: read
