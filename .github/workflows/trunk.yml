@@ -21,8 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       github.event_name != 'pull_request' ||
-      (github.event.pull_request.draft == false && github.event.action != 'labeled') ||
-      (github.event.action == 'labeled' && (github.event.label.name == 'test' || github.event.label.name == 'deploy'))
+      (github.event.pull_request.draft == false || contains(github.event.pull_request.labels.*.name, 'deploy') || contains(github.event.pull_request.labels.*.name, 'test'))
     permissions:
       actions: write
       contents: read
@@ -156,7 +155,7 @@ jobs:
           fetch-depth: 0
 
       - name: Generate PR Description
-        uses: VirdocsSoftware/github-actions/.github/actions/auto-pr-description@main
+        uses: VirdocsSoftware/github-actions/.github/actions/auto-pr-description@v2.26.1
         with:
           gemini-api-key: ${{ secrets.GEMINI_API_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}

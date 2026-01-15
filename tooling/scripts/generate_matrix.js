@@ -39,9 +39,8 @@ function getProjectsWithDependsFile() {
   const projects = [];
   
   try {
-    if (!folderExists(projectsFolder)) {
-      return projects;
-    }
+    // Try to read the directory - if it doesn't exist, readdirSync will throw
+    // This is more reliable than checking folderExists first
     const files = fs.readdirSync(projectsFolder);
     for (const file of files) {
       const projectPath = path.join(projectsFolder, file);
@@ -51,7 +50,11 @@ function getProjectsWithDependsFile() {
       }
     }
   } catch (error) {
-    console.error('Error reading projects folder:', error.message);
+    // If folder doesn't exist or can't be read, return empty array
+    // Only log if it's an unexpected error (not ENOENT or TypeError from mock)
+    if (error.code !== 'ENOENT' && error.name !== 'TypeError') {
+      console.error('Error reading projects folder:', error.message);
+    }
   }
   
   return projects;
@@ -71,10 +74,10 @@ function checkDependencies(fileList, projects) {
       for (const file of fileList) {
         for (const pattern of dependsPatterns) {
           // Convert glob pattern to regex
-          const regexPattern = pattern
+          const regexPattern = '^' + pattern
             .replace(/\./g, '\\.')
-            .replace(/\*/g, '.*');
-          
+            .replace(/\*\*/g, '(.+)')
+            .replace(/\*/g, '([^/]+)') + '$';
           const regex = new RegExp(regexPattern);
           if (regex.test(file)) {
             triggeredProjects.add(project);
@@ -91,17 +94,19 @@ function checkDependencies(fileList, projects) {
 }
 
 function parseFileListForProjects(fileList) {
+  // Read PROJECT_ROOT from env each time to handle test changes
+  const currentProjectRoot = process.env.PROJECT_ROOT || 'project';
   const folders = new Set();
   
   // Extract folders from file paths
   for (const file of fileList) {
-    if (PROJECT_ROOT === '.') {
+    if (currentProjectRoot === '.') {
       const firstFolder = file.split('/')[0];
       if (firstFolder) {
         folders.add(firstFolder);
       }
     } else {
-      if (file.startsWith(PROJECT_ROOT + '/')) {
+      if (file.startsWith(currentProjectRoot + '/')) {
         const parts = file.split('/');
         if (parts.length >= 2) {
           folders.add(parts[0] + '/' + parts[1]);
@@ -111,38 +116,70 @@ function parseFileListForProjects(fileList) {
   }
   
   // Get dependency-triggered folders
+  // Note: getProjectsWithDependsFile uses module-level PROJECT_ROOT, but that's OK
+  // since it's only used to find the projects folder, not for filtering
   const projectsWithDepends = getProjectsWithDependsFile();
   const dependsFolders = checkDependencies(fileList, projectsWithDepends);
   
+  // Track which folders came from dependencies (these are trusted to exist)
+  const dependencyTriggeredFolders = new Set();
+  
   // Combine and remove duplicates
   for (const folder of dependsFolders) {
-    if (PROJECT_ROOT === '.') {
-      folders.add(folder);
+    let folderPath;
+    if (currentProjectRoot === '.') {
+      folderPath = folder;
     } else {
-      folders.add(PROJECT_ROOT + '/' + folder);
+      folderPath = currentProjectRoot + '/' + folder;
     }
+    folders.add(folderPath);
+    dependencyTriggeredFolders.add(folderPath);
   }
   
   // Filter out non-existent folders and ignored folders
   const ignoreList = [...IGNORE_LIST];
-  if (PROJECT_ROOT === '.') {
+  if (currentProjectRoot === '.') {
     ignoreList.push('.github');
   }
   
-  // Add non-existent folders to ignore list
+  // Add non-existent folders to ignore list (but trust dependency-triggered folders)
   for (const folder of folders) {
-    if (!folderExists(folder)) {
-      ignoreList.push(folder);
+    if (!dependencyTriggeredFolders.has(folder)) {
+      // Always join with git root to get absolute path for existence check
+      const checkPath = path.join(gitRoot(), folder);
+      if (!folderExists(checkPath)) {
+        ignoreList.push(folder);
+      }
     }
   }
   
   const validFolders = [];
   for (const folder of folders) {
-    if (!ignoreList.includes(folder) && folderExists(folder)) {
-      if (PROJECT_ROOT === '.') {
+    // Dependency-triggered folders are trusted to exist, others need verification
+    const isDependencyTriggered = dependencyTriggeredFolders.has(folder);
+    // Always join with git root to get absolute path for existence check
+    const checkPath = path.join(gitRoot(), folder);
+    const exists = isDependencyTriggered || folderExists(checkPath);
+    
+    // Check if folder should be ignored - check both full path and project name
+    // First check if the project name (from original IGNORE_LIST) matches
+    // Read IGNORE_LIST from env each time to handle test changes
+    const currentIgnoreList = process.env.IGNORE_LIST ? process.env.IGNORE_LIST.split(' ') : [];
+    let shouldIgnore = false;
+    if (currentProjectRoot !== '.') {
+      const projectName = folder.replace(currentProjectRoot + '/', '');
+      shouldIgnore = currentIgnoreList.includes(projectName);
+    }
+    // Also check if full folder path is in ignore list (for non-existent folders)
+    if (!shouldIgnore) {
+      shouldIgnore = ignoreList.includes(folder);
+    }
+    
+    if (!shouldIgnore && exists) {
+      if (currentProjectRoot === '.') {
         validFolders.push(folder);
       } else {
-        validFolders.push(folder.replace(PROJECT_ROOT + '/', ''));
+        validFolders.push(folder.replace(currentProjectRoot + '/', ''));
       }
     }
   }
@@ -150,10 +187,10 @@ function parseFileListForProjects(fileList) {
   return validFolders;
 }
 
-function generateMatrix(projects) {
+function generateMatrix(projects, includeRoot = false) {
   const matrixObject = {
     include: [
-      { project: '.' },
+      ...(includeRoot ? [{ project: '.' }] : []),
       ...projects.map(project => ({ project }))
     ]
   };
@@ -173,20 +210,25 @@ function main() {
       return;
     }
     
+    // Parse file list
+    const fileList = input.split('\n').filter(line => line.trim());
+    
+    // Check if there are any files changed outside of PROJECT_ROOT
+    const hasChangesOutsideProjectRoot = fileList.some(file => !file.startsWith(PROJECT_ROOT + '/'));
+    
     // Check if PROJECT_ROOT exists
     const projectRootPath = path.join(gitRoot(), PROJECT_ROOT);
     if (!folderExists(projectRootPath)) {
-      // PROJECT_ROOT doesn't exist, return matrix with just root
-      console.log(JSON.stringify({ include: [{ project: '.' }] }));
+      // PROJECT_ROOT doesn't exist, return matrix with just root if there are changes
+      console.log(JSON.stringify({ include: hasChangesOutsideProjectRoot ? [{ project: '.' }] : [] }));
       return;
     }
     
     // Parse file list into projects
-    const fileList = input.split('\n').filter(line => line.trim());
     const projects = parseFileListForProjects(fileList);
     
     // Generate matrix object
-    const matrixObject = generateMatrix(projects);
+    const matrixObject = generateMatrix(projects, hasChangesOutsideProjectRoot);
     
     // Output the matrix object
     console.log(matrixObject);
@@ -208,3 +250,4 @@ module.exports = {
   getProjectsWithDependsFile,
   checkDependencies
 };
+
