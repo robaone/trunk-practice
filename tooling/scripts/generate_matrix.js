@@ -187,10 +187,10 @@ function parseFileListForProjects(fileList) {
   return validFolders;
 }
 
-function generateMatrix(projects) {
+function generateMatrix(projects, includeRoot = false) {
   const matrixObject = {
     include: [
-      { project: '.' },
+      ...(includeRoot ? [{ project: '.' }] : []),
       ...projects.map(project => ({ project }))
     ]
   };
@@ -210,20 +210,25 @@ function main() {
       return;
     }
     
+    // Parse file list
+    const fileList = input.split('\n').filter(line => line.trim());
+    
+    // Check if there are any files changed outside of PROJECT_ROOT
+    const hasChangesOutsideProjectRoot = fileList.some(file => !file.startsWith(PROJECT_ROOT + '/'));
+    
     // Check if PROJECT_ROOT exists
     const projectRootPath = path.join(gitRoot(), PROJECT_ROOT);
     if (!folderExists(projectRootPath)) {
-      // PROJECT_ROOT doesn't exist, return matrix with just root
-      console.log(JSON.stringify({ include: [{ project: '.' }] }));
+      // PROJECT_ROOT doesn't exist, return matrix with just root if there are changes
+      console.log(JSON.stringify({ include: hasChangesOutsideProjectRoot ? [{ project: '.' }] : [] }));
       return;
     }
     
     // Parse file list into projects
-    const fileList = input.split('\n').filter(line => line.trim());
     const projects = parseFileListForProjects(fileList);
     
     // Generate matrix object
-    const matrixObject = generateMatrix(projects);
+    const matrixObject = generateMatrix(projects, hasChangesOutsideProjectRoot);
     
     // Output the matrix object
     console.log(matrixObject);

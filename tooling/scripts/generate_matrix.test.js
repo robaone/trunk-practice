@@ -50,9 +50,9 @@ describe('generate_matrix.js', () => {
   });
 
   describe('generateMatrix', () => {
-    it('should generate matrix with root project and provided projects', () => {
+    it('should generate matrix with root project and provided projects when includeRoot is true', () => {
       const projects = ['project1', 'project2'];
-      const result = generateMatrix(projects);
+      const result = generateMatrix(projects, true);
       const parsed = JSON.parse(result);
       
       expect(parsed).toEqual({
@@ -64,9 +64,22 @@ describe('generate_matrix.js', () => {
       });
     });
 
-    it('should generate matrix with only root when no projects provided', () => {
+    it('should generate matrix without root project when includeRoot is false', () => {
+      const projects = ['project1', 'project2'];
+      const result = generateMatrix(projects, false);
+      const parsed = JSON.parse(result);
+      
+      expect(parsed).toEqual({
+        include: [
+          { project: 'project1' },
+          { project: 'project2' }
+        ]
+      });
+    });
+
+    it('should generate matrix with only root when no projects provided and includeRoot is true', () => {
       const projects = [];
-      const result = generateMatrix(projects);
+      const result = generateMatrix(projects, true);
       const parsed = JSON.parse(result);
       
       expect(parsed).toEqual({
@@ -74,14 +87,33 @@ describe('generate_matrix.js', () => {
       });
     });
 
-    it('should handle single project', () => {
+    it('should generate empty matrix when no projects provided and includeRoot is false', () => {
+      const projects = [];
+      const result = generateMatrix(projects, false);
+      const parsed = JSON.parse(result);
+      
+      expect(parsed).toEqual({
+        include: []
+      });
+    });
+
+    it('should handle single project with root', () => {
       const projects = ['single-project'];
-      const result = generateMatrix(projects);
+      const result = generateMatrix(projects, true);
       const parsed = JSON.parse(result);
       
       expect(parsed.include).toHaveLength(2);
       expect(parsed.include[0]).toEqual({ project: '.' });
       expect(parsed.include[1]).toEqual({ project: 'single-project' });
+    });
+
+    it('should handle single project without root', () => {
+      const projects = ['single-project'];
+      const result = generateMatrix(projects, false);
+      const parsed = JSON.parse(result);
+      
+      expect(parsed.include).toHaveLength(1);
+      expect(parsed.include[0]).toEqual({ project: 'single-project' });
     });
   });
 
