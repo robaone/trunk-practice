@@ -209,7 +209,7 @@ jobs:
 
   deploy-to-production:
     name: Deploy to Production
-    needs: [initialize]
+    needs: [initialize, unit-tests, feature-tests]
     environment: production
     env:
       RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
