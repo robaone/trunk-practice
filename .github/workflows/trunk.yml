@@ -9,7 +9,7 @@ on:
       - main
     types: [opened, synchronize, reopened, labeled, ready_for_review]
   release:
-    types: [published, prereleased]
+    types: [published]
 
 env:
   NODE_VERSION: 22.x
@@ -251,9 +251,37 @@ jobs:
             echo "No package.json found at root, skipping..."
           fi
 
+  request-production-approval:
+    name: Request Production Approval
+    needs: [initialize, unit-tests, feature-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Only run for full releases (not pre-releases)
+    if: github.event_name == 'release' && github.event.release.prerelease == false && fromJson(needs.initialize.outputs.matrix).include[0] != null
+    steps:
+      - name: Slack Approval
+        uses: trstringer/slack-approval@v1
+        with:
+          secret_slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+          secret_slack_app_token: ${{ secrets.SLACK_APP_TOKEN }}
+          slack_channel_id: ${{ secrets.SLACK_CHANNEL_ID }}
+          mention_users: ${{ secrets.SLACK_MEMBER_ID }}
+          approval_message: "Production deployment requested for ${{ github.event.release.tag_name }} by ${{ github.actor }}"
+
+      - name: Handle Timeout/Cancellation
+        if: cancelled() || failure()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "🚫 Deployment approval request timed out or was cancelled. Tag: ${{ github.event.release.tag_name }}"
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+
   deploy-to-production:
     name: Deploy to Production
-    needs: [initialize, unit-tests, feature-tests]
+    needs: [initialize, unit-tests, feature-tests, request-production-approval]
     environment: production
     env:
       RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
