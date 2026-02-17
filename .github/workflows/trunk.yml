@@ -259,7 +259,7 @@ jobs:
     if: github.event_name == 'release' && github.event.release.prerelease == false && fromJson(needs.initialize.outputs.matrix).include[0] != null
     steps:
       - name: Slack Approval
-        uses: TigerWest/slack-approval@v1
+        uses: TigerWest/slack-approval@v1.1.0
         env:
           SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
