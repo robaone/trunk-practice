@@ -255,18 +255,19 @@ jobs:
     name: Request Production Approval
     needs: [initialize, unit-tests, feature-tests]
     runs-on: ubuntu-latest
-    timeout-minutes: 5
     # Only run for full releases (not pre-releases)
     if: github.event_name == 'release' && github.event.release.prerelease == false && fromJson(needs.initialize.outputs.matrix).include[0] != null
     steps:
       - name: Slack Approval
-        uses: trstringer/slack-approval@v1
+        uses: TigerWest/slack-approval@v1
+        env:
+          SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+        timeout-minutes: 5
         with:
-          secret_slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
-          secret_slack_app_token: ${{ secrets.SLACK_APP_TOKEN }}
-          slack_channel_id: ${{ secrets.SLACK_CHANNEL_ID }}
-          mention_users: ${{ vars.SLACK_MEMBER_ID }}
-          approval_message: "Production deployment requested for ${{ github.event.release.tag_name }} by ${{ github.actor }}"
+          approvers: ${{ vars.SLACK_MEMBER_ID }}
 
       - name: Handle Timeout/Cancellation
         if: cancelled() || failure()
