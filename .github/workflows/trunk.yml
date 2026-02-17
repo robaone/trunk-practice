@@ -255,7 +255,6 @@ jobs:
     name: Request Production Approval
     needs: [initialize, unit-tests, feature-tests]
     runs-on: ubuntu-latest
-    timeout-minutes: 5
     # Only run for full releases (not pre-releases)
     if: github.event_name == 'release' && github.event.release.prerelease == false && fromJson(needs.initialize.outputs.matrix).include[0] != null
     steps:
@@ -266,6 +265,7 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+        timeout-minutes: 5
         with:
           approvers: ${{ vars.SLACK_MEMBER_ID }}
 
