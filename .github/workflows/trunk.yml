@@ -256,7 +256,7 @@ jobs:
     # needs: [initialize, unit-tests, feature-tests]
     runs-on: ubuntu-latest
     # Only run for full releases (not pre-releases)
-    if: github.event_name == 'release' && github.event.release.prerelease == false && fromJson(needs.initialize.outputs.matrix).include[0] != null
+    # if: github.event_name == 'release' && github.event.release.prerelease == false && fromJson(needs.initialize.outputs.matrix).include[0] != null
     steps:
       - name: Slack Approval
         uses: TigerWest/slack-approval@v1.1.0
