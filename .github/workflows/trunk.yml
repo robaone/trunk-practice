@@ -265,20 +265,9 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
-        timeout-minutes: 5
+        timeout-minutes: 1
         with:
           approvers: ${{ vars.SLACK_MEMBER_ID }}
-
-      - name: Handle Timeout/Cancellation
-        if: cancelled() || failure()
-        uses: slackapi/slack-github-action@v1.24.0
-        with:
-          payload: |
-            {
-              "text": "🚫 Deployment approval request timed out or was cancelled. Tag: ${{ github.event.release.tag_name }}"
-            }
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
 
   deploy-to-production:
     name: Deploy to Production
