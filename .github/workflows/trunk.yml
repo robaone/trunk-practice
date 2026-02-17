@@ -265,7 +265,7 @@ jobs:
           secret_slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
           secret_slack_app_token: ${{ secrets.SLACK_APP_TOKEN }}
           slack_channel_id: ${{ secrets.SLACK_CHANNEL_ID }}
-          mention_users: ${{ variables.SLACK_MEMBER_ID }}
+          mention_users: ${{ vars.SLACK_MEMBER_ID }}
           approval_message: "Production deployment requested for ${{ github.event.release.tag_name }} by ${{ github.actor }}"
 
       - name: Handle Timeout/Cancellation
