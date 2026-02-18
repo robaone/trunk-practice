@@ -10,7 +10,7 @@ jobs:
     # Only run on PR comments (not issue comments) containing "deploy develop"
     if: >
       github.event.issue.pull_request != null &&
-      contains(github.event.comment.body, 'deploy develop')
+      contains(github.event.comment.body, 'develop deploy')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -154,7 +154,7 @@ jobs:
               conflictFiles.trim(),
               '```',
               '',
-              'Please resolve the conflict locally, push your changes, and re-trigger by commenting `deploy develop`.',
+              'Please resolve the conflict locally, push your changes, and re-trigger by commenting `develop deploy`.',
               '',
               `**Workflow run:** ${process.env.RUN_URL}`,
             ].join('\n');
