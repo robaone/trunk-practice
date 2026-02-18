@@ -4,13 +4,19 @@ on:
   issue_comment:
     types: [created]
 
+# Serialize all runs to prevent races on the shared develop_auto branch.
+# cancel-in-progress: false queues concurrent triggers rather than dropping them.
+concurrency:
+  group: deploy-develop
+  cancel-in-progress: false
+
 jobs:
   prepare:
     name: Prepare develop_auto branch
-    # Only run on PR comments (not issue comments) containing "deploy develop"
+    # Exact-match the command to avoid accidental triggers (e.g. "please don't develop deploy")
     if: >
       github.event.issue.pull_request != null &&
-      contains(github.event.comment.body, 'develop deploy')
+      github.event.comment.body == 'develop deploy'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -21,7 +27,7 @@ jobs:
 
     steps:
       - name: Verify commenter has write access
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         with:
           script: |
             try {
@@ -30,7 +36,7 @@ jobs:
                 repo: context.repo.repo,
                 username: context.actor,
               });
-              const hasWrite = ['admin', 'write'].includes(data.permission);
+              const hasWrite = ['admin', 'write', 'maintain'].includes(data.permission);
               if (!hasWrite) {
                 core.setFailed(`@${context.actor} does not have write access and cannot trigger deployments (permission: ${data.permission}).`);
               }
@@ -38,9 +44,11 @@ jobs:
               core.setFailed(`Could not verify permissions for @${context.actor}: ${e.message}`);
             }
 
-      - name: Get PR branch name
+      - name: Get PR info and block fork PRs
         id: get_pr
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
           script: |
             const pr = await github.rest.pulls.get({
@@ -48,10 +56,32 @@ jobs:
               repo: context.repo.repo,
               pull_number: context.issue.number,
             });
+
+            const headRepo = pr.data.head.repo?.full_name;
+            const baseRepo = pr.data.base.repo.full_name;
+
+            if (headRepo !== baseRepo) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: [
+                  '❌ **Deploy to develop is not supported for fork PRs**',
+                  '',
+                  'The `develop deploy` command only works on branches in the same repository.',
+                  'Please open your PR from a branch on this repo rather than a fork.',
+                  '',
+                  `**Workflow run:** ${process.env.RUN_URL}`,
+                ].join('\n'),
+              });
+              core.setFailed(`PR head (${headRepo}) is from a fork of ${baseRepo}. Fork PRs are not supported.`);
+              return;
+            }
+
             core.setOutput('branch', pr.data.head.ref);
 
       - name: Post workflow started comment
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
@@ -129,7 +159,7 @@ jobs:
 
       - name: Comment on merge conflict
         if: steps.merge.outputs.success == 'false'
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         env:
           CONFLICT_STAGE: ${{ steps.merge.outputs.conflict_stage }}
           CONFLICT_FILES: ${{ steps.merge.outputs.conflict_files }}
@@ -221,7 +251,7 @@ jobs:
     steps:
       - name: Comment deployment success
         if: needs.deploy.result == 'success'
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
@@ -241,7 +271,7 @@ jobs:
 
       - name: Comment deployment failure
         if: needs.deploy.result == 'failure'
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
@@ -261,7 +291,7 @@ jobs:
 
       - name: Comment deployment cancelled
         if: needs.deploy.result == 'cancelled'
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
