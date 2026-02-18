@@ -1,0 +1,278 @@
+name: Deploy PR to Develop
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  prepare:
+    name: Prepare develop_auto branch
+    # Only run on PR comments (not issue comments) containing "deploy develop"
+    if: >
+      github.event.issue.pull_request != null &&
+      contains(github.event.comment.body, 'deploy develop')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      pr_branch: ${{ steps.get_pr.outputs.branch }}
+
+    steps:
+      - name: Verify commenter has write access
+        uses: actions/github-script@v6
+        with:
+          script: |
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: context.actor,
+              });
+              const hasWrite = ['admin', 'write'].includes(data.permission);
+              if (!hasWrite) {
+                core.setFailed(`@${context.actor} does not have write access and cannot trigger deployments (permission: ${data.permission}).`);
+              }
+            } catch (e) {
+              core.setFailed(`Could not verify permissions for @${context.actor}: ${e.message}`);
+            }
+
+      - name: Get PR branch name
+        id: get_pr
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            core.setOutput('branch', pr.data.head.ref);
+
+      - name: Post workflow started comment
+        uses: actions/github-script@v6
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: [
+                '🚀 **Deploy to develop triggered**',
+                '',
+                'Preparing `develop_auto` branch and queuing deployment...',
+                '',
+                `**Workflow run:** ${process.env.RUN_URL}`,
+              ].join('\n'),
+            });
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Prepare develop_auto and merge branches
+        id: merge
+        shell: bash
+        run: |
+          PR_BRANCH="${{ steps.get_pr.outputs.branch }}"
+          git fetch --all
+
+          # --- Step 1: Set up develop_auto ---
+          if git ls-remote --exit-code --heads origin develop_auto > /dev/null 2>&1; then
+            echo "develop_auto exists — checking out and merging main into it"
+            git checkout -B develop_auto origin/develop_auto
+
+            if ! git merge origin/main --no-edit -m "chore: sync main into develop_auto [auto]"; then
+              CONFLICT_FILES=$(git diff --name-only --diff-filter=U)
+              git merge --abort
+              {
+                echo "success=false"
+                echo "conflict_stage=main_to_develop_auto"
+                echo "conflict_files<<CONFLICT_EOF"
+                echo "$CONFLICT_FILES"
+                echo "CONFLICT_EOF"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            echo "develop_auto does not exist — creating from main"
+            git checkout -b develop_auto origin/main
+          fi
+
+          # --- Step 2: Merge PR branch into develop_auto ---
+          if ! git merge "origin/${PR_BRANCH}" --no-edit -m "chore: merge ${PR_BRANCH} into develop_auto for deploy [auto]"; then
+            CONFLICT_FILES=$(git diff --name-only --diff-filter=U)
+            git merge --abort
+            {
+              echo "success=false"
+              echo "conflict_stage=pr_branch_to_develop_auto"
+              echo "conflict_files<<CONFLICT_EOF"
+              echo "$CONFLICT_FILES"
+              echo "CONFLICT_EOF"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # --- Step 3: Push develop_auto ---
+          git push origin develop_auto --force-with-lease
+          echo "success=true" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on merge conflict
+        if: steps.merge.outputs.success == 'false'
+        uses: actions/github-script@v6
+        env:
+          CONFLICT_STAGE: ${{ steps.merge.outputs.conflict_stage }}
+          CONFLICT_FILES: ${{ steps.merge.outputs.conflict_files }}
+          PR_BRANCH: ${{ steps.get_pr.outputs.branch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const stage = process.env.CONFLICT_STAGE;
+            const conflictFiles = process.env.CONFLICT_FILES || '(could not determine files)';
+            const prBranch = process.env.PR_BRANCH;
+            const stageDescription = stage === 'main_to_develop_auto'
+              ? 'merging `main` into `develop_auto`'
+              : `merging \`${prBranch}\` into \`develop_auto\``;
+
+            const body = [
+              '❌ **Deploy to develop failed — merge conflict**',
+              '',
+              `A conflict occurred while ${stageDescription}.`,
+              '',
+              '**Conflicting files:**',
+              '```',
+              conflictFiles.trim(),
+              '```',
+              '',
+              'Please resolve the conflict locally, push your changes, and re-trigger by commenting `deploy develop`.',
+              '',
+              `**Workflow run:** ${process.env.RUN_URL}`,
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+      - name: Fail job on merge conflict
+        if: steps.merge.outputs.success == 'false'
+        run: |
+          echo "Merge conflict detected. See PR comment for details."
+          exit 1
+
+  deploy:
+    name: Deploy develop_auto
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment: testing
+
+    steps:
+      - name: Checkout develop_auto
+        uses: actions/checkout@v4
+        with:
+          ref: develop_auto
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Install dependencies
+        run: |
+          if [ -f "package.json" ]; then
+            npm install
+          else
+            echo "No package.json found, skipping install."
+          fi
+
+      - name: Deploy to develop environment
+        run: |
+          echo "Deploying develop_auto to develop environment..."
+          echo "Branch: develop_auto"
+          echo "Commit: $(git rev-parse HEAD)"
+          if [ -f "package.json" ] && [ "$(jq -r '.scripts["deploy:testing"]' package.json)" != "null" ]; then
+            npm run deploy:testing
+          else
+            echo "No deploy:testing script found — simulating deploy."
+            echo "Deploy complete."
+          fi
+
+  notify:
+    name: Notify PR of deployment result
+    needs: [prepare, deploy]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Comment deployment success
+        if: needs.deploy.result == 'success'
+        uses: actions/github-script@v6
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: [
+                '✅ **Successfully deployed to develop environment!**',
+                '',
+                'Branch `develop_auto` was synced from `main`, your PR branch was merged in, and the result was deployed.',
+                '',
+                `**Workflow run:** ${process.env.RUN_URL}`,
+              ].join('\n'),
+            });
+
+      - name: Comment deployment failure
+        if: needs.deploy.result == 'failure'
+        uses: actions/github-script@v6
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: [
+                '❌ **Deploy to develop environment failed**',
+                '',
+                'The deployment step encountered an error. Check the workflow logs for details.',
+                '',
+                `**Workflow run:** ${process.env.RUN_URL}`,
+              ].join('\n'),
+            });
+
+      - name: Comment deployment cancelled
+        if: needs.deploy.result == 'cancelled'
+        uses: actions/github-script@v6
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: [
+                '⚠️ **Deploy to develop environment was cancelled**',
+                '',
+                `**Workflow run:** ${process.env.RUN_URL}`,
+              ].join('\n'),
+            });
