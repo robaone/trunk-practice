@@ -11,3 +11,5 @@ This repository is designed to test out workflows where the only protected branc
 ## Feature Tests
 
 A feature test file explains all of the functionality
+
+## I want to add functionality!
