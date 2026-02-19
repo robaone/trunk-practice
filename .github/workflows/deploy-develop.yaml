@@ -21,6 +21,12 @@ jobs:
       issues: write
     outputs:
       pr_branch: ${{ steps.get_pr.outputs.branch }}
+      pr_number: ${{ steps.get_pr.outputs.number }}
+      pr_author: ${{ steps.get_pr.outputs.author }}
+      pr_title: ${{ steps.get_pr.outputs.title }}
+      was_reset: ${{ steps.merge.outputs.was_reset }}
+      removed_pr_count: ${{ steps.merge.outputs.removed_pr_count }}
+      removed_pr_data: ${{ steps.merge.outputs.removed_pr_data }}
 
     steps:
       - name: Verify commenter has write access
@@ -76,6 +82,9 @@ jobs:
             }
 
             core.setOutput('branch', pr.data.head.ref);
+            core.setOutput('number', context.issue.number);
+            core.setOutput('author', pr.data.user.login);
+            core.setOutput('title', pr.data.title);
 
       - name: Post workflow started comment
         uses: actions/github-script@v7
@@ -116,39 +125,80 @@ jobs:
           PR_BRANCH="${{ steps.get_pr.outputs.branch }}"
           git fetch --all
 
-          # --- Step 1: Set up develop_auto ---
+          # --- Step 1: Check if we need to reset develop_auto ---
+          WAS_RESET=false
+          REMOVED_PR_DATA=""
+          
           if git ls-remote --exit-code --heads origin develop_auto > /dev/null 2>&1; then
-            echo "develop_auto exists — checking out and merging main into it"
-            git checkout -B develop_auto origin/develop_auto
-
-            if ! git merge origin/main --no-edit -m "chore: sync main into develop_auto [auto]"; then
-              CONFLICT_FILES=$(git diff --name-only --diff-filter=U)
-              git merge --abort
+            echo "develop_auto exists — checking if main has new commits..."
+            
+            # Check if main has commits not in develop_auto
+            NEW_COMMITS=$(git log origin/develop_auto..origin/main --oneline 2>/dev/null || echo "")
+            
+            if [ -n "$NEW_COMMITS" ]; then
+              echo "✨ Main has new commits since last sync — resetting develop_auto to main"
+              echo "$NEW_COMMITS"
               
-              # Create conflict resolution branch
-              CONFLICT_BRANCH="conflict/sync-main-${GITHUB_RUN_ID}"
-              git checkout -b "$CONFLICT_BRANCH" origin/main
-              git push origin "$CONFLICT_BRANCH"
+              # BEFORE resetting, identify which PRs will be removed
+              echo "🔍 Identifying PRs that will be removed..."
+              REMOVED_BRANCHES=$(git log origin/main..origin/develop_auto --merges \
+                --grep="merge .* into develop_auto for deploy" --format="%s" 2>/dev/null | \
+                sed -n 's/.*merge \(.*\) into develop_auto for deploy.*/\1/p' || echo "")
               
-              # Create PR
-              if ! PR_URL=$(gh pr create --base develop_auto --head "$CONFLICT_BRANCH" --title "Resolve conflicts: Sync main into develop_auto" --body "Merge conflict detected while syncing main into develop_auto for deployment. Please resolve conflicts here."); then
-                echo "⚠️ Failed to create PR automatically (likely due to missing 'Allow GitHub Actions to create and approve pull requests' permission)."
-                PR_URL="${{ github.server_url }}/${{ github.repository }}/compare/develop_auto...${CONFLICT_BRANCH}?expand=1"
+              # Query GitHub for each removed branch to get PR info
+              for branch in $REMOVED_BRANCHES; do
+                echo "  Checking branch: $branch"
+                PR_JSON=$(gh pr list --head "$branch" --state open --json number,author,title --jq '.[0]' 2>/dev/null || echo "null")
+                
+                if [ "$PR_JSON" != "null" ] && [ -n "$PR_JSON" ]; then
+                  PR_NUM=$(echo "$PR_JSON" | jq -r '.number // empty')
+                  PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.author.login // empty')
+                  PR_TITLE=$(echo "$PR_JSON" | jq -r '.title // empty')
+                  
+                  if [ -n "$PR_NUM" ]; then
+                    echo "    Found open PR #$PR_NUM by $PR_AUTHOR"
+                    REMOVED_PR_DATA+="$PR_NUM|$branch|$PR_AUTHOR|$PR_TITLE"$'\n'
+                  fi
+                fi
+              done
+              
+              git checkout -B develop_auto origin/main
+              WAS_RESET=true
+            else
+              echo "📦 Main unchanged — merging into existing develop_auto"
+              git checkout -B develop_auto origin/develop_auto
+              
+              if ! git merge origin/main --no-edit -m "chore: sync main into develop_auto [auto]"; then
+                CONFLICT_FILES=$(git diff --name-only --diff-filter=U)
+                git merge --abort
+                
+                # Create conflict resolution branch
+                CONFLICT_BRANCH="conflict/sync-main-${GITHUB_RUN_ID}"
+                git checkout -b "$CONFLICT_BRANCH" origin/main
+                git push origin "$CONFLICT_BRANCH"
+                
+                # Create PR
+                if ! PR_URL=$(gh pr create --base develop_auto --head "$CONFLICT_BRANCH" --title "Resolve conflicts: Sync main into develop_auto" --body "Merge conflict detected while syncing main into develop_auto for deployment. Please resolve conflicts here."); then
+                  echo "⚠️ Failed to create PR automatically (likely due to missing 'Allow GitHub Actions to create and approve pull requests' permission)."
+                  PR_URL="${{ github.server_url }}/${{ github.repository }}/compare/develop_auto...${CONFLICT_BRANCH}?expand=1"
+                fi
+                
+                {
+                  echo "success=false"
+                  echo "conflict_stage=main_to_develop_auto"
+                  echo "conflict_files<<CONFLICT_EOF"
+                  echo "$CONFLICT_FILES"
+                  echo "CONFLICT_EOF"
+                  echo "conflict_pr_url=$PR_URL"
+                  echo "was_reset=false"
+                } >> "$GITHUB_OUTPUT"
+                exit 0
               fi
-              
-              {
-                echo "success=false"
-                echo "conflict_stage=main_to_develop_auto"
-                echo "conflict_files<<CONFLICT_EOF"
-                echo "$CONFLICT_FILES"
-                echo "CONFLICT_EOF"
-                echo "conflict_pr_url=$PR_URL"
-              } >> "$GITHUB_OUTPUT"
-              exit 0
             fi
           else
             echo "develop_auto does not exist — creating from main"
             git checkout -b develop_auto origin/main
+            WAS_RESET=true
           fi
 
           # --- Step 2: Merge PR branch into develop_auto ---
@@ -174,13 +224,30 @@ jobs:
               echo "$CONFLICT_FILES"
               echo "CONFLICT_EOF"
               echo "conflict_pr_url=$PR_URL"
+              echo "was_reset=$WAS_RESET"
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           # --- Step 3: Push develop_auto ---
           git push origin develop_auto --force-with-lease
+          
+          # --- Step 4: Output results ---
           echo "success=true" >> "$GITHUB_OUTPUT"
+          echo "was_reset=$WAS_RESET" >> "$GITHUB_OUTPUT"
+          
+          if [ "$WAS_RESET" = "true" ] && [ -n "$REMOVED_PR_DATA" ]; then
+            # Count non-empty lines
+            REMOVED_COUNT=$(echo "$REMOVED_PR_DATA" | grep -c '|' || echo "0")
+            echo "removed_pr_count=$REMOVED_COUNT" >> "$GITHUB_OUTPUT"
+            echo "removed_pr_data<<EOF" >> "$GITHUB_OUTPUT"
+            echo "$REMOVED_PR_DATA" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+            echo "📊 Removed $REMOVED_COUNT open PR(s) from develop_auto"
+          else
+            echo "removed_pr_count=0" >> "$GITHUB_OUTPUT"
+            echo "removed_pr_data=" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Comment on merge conflict
         if: steps.merge.outputs.success == 'false'
@@ -281,25 +348,78 @@ jobs:
       issues: write
 
     steps:
+      - name: Checkout repository for scripts
+        uses: actions/checkout@v4
+
       - name: Comment deployment success
         if: needs.deploy.result == 'success'
         uses: actions/github-script@v7
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WAS_RESET: ${{ needs.prepare.outputs.was_reset }}
+          REMOVED_PR_DATA: ${{ needs.prepare.outputs.removed_pr_data }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
         with:
           script: |
+            const wasReset = process.env.WAS_RESET === 'true';
+            const removedPrData = process.env.REMOVED_PR_DATA || '';
+            const repoUrl = process.env.REPO_URL;
+            
+            let body = [
+              '✅ **Successfully deployed to develop environment!**',
+              '',
+            ];
+            
+            if (wasReset && removedPrData.trim()) {
+              body.push('⚠️ **Note:** `develop_auto` was reset to `main` (new commits detected)');
+              body.push('');
+              body.push('The following PRs were previously deployed but have been cleared:');
+              
+              // Parse removed PR data (format: PR_NUM|BRANCH|AUTHOR|TITLE)
+              const lines = removedPrData.trim().split('\n').filter(line => line.includes('|'));
+              for (const line of lines) {
+                const [prNum, branch, author] = line.split('|');
+                if (prNum && author) {
+                  body.push(`- PR #${prNum} (@${author})`);
+                }
+              }
+              
+              body.push('');
+              body.push('If they still need testing in develop, they should re-run `develop deploy`.');
+              body.push('');
+            } else if (wasReset) {
+              body.push('Branch `develop_auto` was reset to `main` (new commits detected) and your PR was deployed.');
+              body.push('');
+            } else {
+              body.push('Branch `develop_auto` was synced from `main`, your PR branch was merged in, and the result was deployed to `testing`.');
+              body.push('');
+            }
+            
+            body.push(`**Workflow run:** ${process.env.RUN_URL}`);
+            
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: [
-                '✅ **Successfully deployed to develop environment!**',
-                '',
-                'Branch `develop_auto` was synced from `main`, your PR branch was merged in, and the result was deployed to `testing`.',
-                '',
-                `**Workflow run:** ${process.env.RUN_URL}`,
-              ].join('\n'),
+              body: body.join('\n'),
             });
+
+      - name: Send Slack notification for removed PRs
+        if: needs.deploy.result == 'success' && needs.prepare.outputs.was_reset == 'true' && needs.prepare.outputs.removed_pr_count > '0'
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
+        run: |
+          chmod +x .github/scripts/notify-slack-removed-prs.sh
+          .github/scripts/notify-slack-removed-prs.sh \
+            "${{ needs.prepare.outputs.removed_pr_data }}" \
+            "${{ needs.prepare.outputs.pr_number }}" \
+            "${{ needs.prepare.outputs.pr_branch }}" \
+            "${{ needs.prepare.outputs.pr_author }}" \
+            "${{ needs.prepare.outputs.pr_title }}" \
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            "${{ github.server_url }}/${{ github.repository }}"
 
       - name: Comment deployment failure
         if: needs.deploy.result == 'failure'
