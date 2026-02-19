@@ -165,6 +165,112 @@ Feature: Workflow Started Notification
 
 ---
 
+## Feature: Develop Auto Reset Approval Workflow
+
+```gherkin
+Feature: Develop Auto Reset Approval Workflow
+  Before resetting develop_auto, the workflow should request approval via Slack
+
+  Background:
+    Given all permission and fork checks have passed
+    And the repository has been checked out with full history
+    And the workflow detects develop_auto needs to be reset
+
+  Scenario: Send approval request to Slack before reset
+    Given develop_auto exists and contains previous PR changes
+    And main has new commits requiring develop_auto reset
+    When the prepare step determines a reset is needed
+    Then an approval request message should be sent to Slack
+    And the message should explain that develop_auto will be reset
+    And the message should list which PRs will be removed
+    And the message should include approve and reject buttons
+    And the workflow should wait for a response
+
+  Scenario: Team member approves reset via Slack
+    Given an approval request has been sent to Slack
+    When any team member clicks the approve button
+    Then the approval should be recorded
+    And the workflow should continue with the reset
+    And develop_auto should be reset to main
+    And the PR branch should be merged
+    And the deployment should proceed normally
+    And a confirmation comment should be posted to the PR
+
+  Scenario: Team member rejects reset via Slack
+    Given an approval request has been sent to Slack
+    When any team member clicks the reject button
+    Then the rejection should be recorded
+    And the workflow should not reset develop_auto
+    And the workflow should not overwrite develop_auto
+    And the PR branch should not be merged
+    And the deployment should be cancelled
+    And a cancellation comment should be posted to the PR
+    And the workflow should exit with failure status
+
+  Scenario: Approval request timeout
+    Given an approval request has been sent to Slack
+    When no response is received within the timeout period
+    Then the workflow should treat it as a rejection
+    And the deployment should be cancelled
+    And a timeout comment should be posted to the PR
+    And the comment should indicate no response was received
+
+  Scenario: Cancellation comment format
+    Given the reset was rejected via Slack
+    And the rejecting user was "alice"
+    When the cancellation comment is posted
+    Then the comment should indicate deployment was cancelled
+    And the comment should mention it was rejected by a team member
+    And the comment should explain develop_auto was not modified
+    And the comment should include the workflow run URL
+    And the comment should include a cancelled emoji
+
+  Scenario: Approval message includes context
+    Given develop_auto contains PR #100 and PR #101
+    And main has new commits
+    And PR #102 triggered the deployment
+    When the approval request is sent to Slack
+    Then the message should list removed PRs: #100, #101
+    And the message should indicate triggering PR: #102
+    And the message should include links to all PRs
+    And the message should include a link to the workflow run
+    And the message should show who requested the deployment
+
+  Scenario: No approval needed when develop_auto doesn't exist
+    Given develop_auto does not exist on remote
+    When the prepare step runs
+    Then no approval request should be sent
+    And develop_auto should be created from main directly
+    And the workflow should proceed without waiting
+
+  Scenario: No approval needed when no reset is required
+    Given develop_auto exists
+    And main has no new commits since last sync
+    When the prepare step runs
+    Then no approval request should be sent
+    And main should be merged normally into develop_auto
+    And the workflow should proceed without waiting
+
+  Scenario: Multiple approval responses handled correctly
+    Given an approval request has been sent
+    When multiple team members respond
+    Then the first response should be used
+    And subsequent responses should be ignored
+    And only one action should be taken (approve or reject)
+
+  Scenario: Slack approval uses interactive components
+    Given the approval request is being constructed
+    When the message is sent to Slack
+    Then it should use Block Kit format
+    And it should include an actions block
+    And the actions block should have an "Approve" button
+    And the actions block should have a "Reject" button
+    And the buttons should have unique action IDs
+    And the buttons should include workflow context in values
+```
+
+---
+
 ## Feature: Develop Auto Branch Preparation
 
 ```gherkin
@@ -174,23 +280,36 @@ Feature: Develop Auto Branch Preparation
   Background:
     Given all permission and fork checks have passed
     And the repository has been checked out with full history
+    And the approval workflow has completed (if reset was required)
 
   Scenario: Create develop_auto from main when it doesn't exist
     Given the develop_auto branch does not exist on the remote
     When the prepare step runs
     Then a new develop_auto branch should be created from main
     And no merge from main should be attempted
+    And no approval should be required
 
   Scenario: Sync develop_auto with main when it exists
     Given the develop_auto branch exists on the remote
+    And no reset is required
     When the prepare step runs
     Then develop_auto should be checked out
     And main should be merged into develop_auto
     And the merge commit message should be "chore: sync main into develop_auto [auto]"
 
+  Scenario: Reset develop_auto after approval
+    Given the develop_auto branch exists
+    And main has new commits requiring reset
+    And the reset was approved via Slack
+    When the prepare step continues after approval
+    Then develop_auto should be reset to main
+    And previous PR changes should be discarded
+    And no merge from main should be performed
+
   Scenario: Fast-forward merge of main into develop_auto
     Given the develop_auto branch exists
     And develop_auto is behind main with no conflicts
+    And no reset is required
     When the prepare step runs
     Then main should merge cleanly into develop_auto
     And the merge should complete successfully
@@ -199,6 +318,7 @@ Feature: Develop Auto Branch Preparation
     Given the develop_auto branch exists
     And develop_auto has diverged from main
     And there are no conflicts
+    And no reset is required
     When the prepare step runs
     Then main should be three-way merged into develop_auto
     And the merge should complete successfully
@@ -581,16 +701,19 @@ Feature: Complete Workflow Success Path
     And a "deployment succeeded" comment is posted
     And the workflow completes with success status
 
-  Scenario: Successful deployment with existing develop_auto branch
+  Scenario: Successful deployment with existing develop_auto branch and approval
     Given an open pull request #124 from branch "feature/new-api"
     And the PR is from the same repository
     And develop_auto branch exists on remote
     And develop_auto is 3 commits behind main
+    And develop_auto contains previous PR changes
     And a user with admin access comments "develop deploy"
     When the workflow executes
     Then permission verification passes
-    And develop_auto is checked out
-    And main is merged into develop_auto (3 commits)
+    And a reset is detected as needed
+    And an approval request is sent to Slack
+    And a team member approves the reset
+    And develop_auto is reset to main
     And "feature/new-api" is merged into develop_auto
     And develop_auto is force-with-lease pushed to origin
     And develop_auto is deployed to testing environment
@@ -623,8 +746,32 @@ Feature: Complete Workflow Failure Paths
     And the workflow exits with failure
     And develop_auto is not modified
 
+  Scenario: Failure due to rejected reset approval
+    Given an open pull request #127 from branch "feature/new-feature"
+    And develop_auto exists and needs to be reset
+    And a user with write access comments "develop deploy"
+    When the workflow executes
+    Then an approval request is sent to Slack
+    And a team member rejects the reset
+    And a cancellation comment is posted to the PR
+    And the workflow exits with failure
+    And develop_auto is not reset
+    And develop_auto is not overwritten
+    And the PR branch is not merged
+
+  Scenario: Failure due to approval timeout
+    Given an open pull request #128 from branch "feature/update"
+    And develop_auto exists and needs to be reset
+    And a user with write access comments "develop deploy"
+    When the workflow executes
+    Then an approval request is sent to Slack
+    And no response is received within the timeout period
+    And a timeout cancellation comment is posted to the PR
+    And the workflow exits with failure
+    And develop_auto is not modified
+
   Scenario: Failure due to main merge conflict
-    Given an open pull request #127 from branch "feature/refactor"
+    Given an open pull request #129 from branch "feature/refactor"
     And develop_auto exists with conflicting changes to main in "config.yaml"
     And a user with write access comments "develop deploy"
     When the workflow executes
@@ -636,7 +783,7 @@ Feature: Complete Workflow Failure Paths
     And develop_auto is not pushed
 
   Scenario: Failure due to PR branch merge conflict
-    Given an open pull request #128 from branch "feature/ui-update"
+    Given an open pull request #130 from branch "feature/ui-update"
     And develop_auto has been synced with main successfully
     And "feature/ui-update" conflicts with develop_auto in "styles.css"
     And a user with write access comments "develop deploy"
@@ -649,7 +796,7 @@ Feature: Complete Workflow Failure Paths
     And develop_auto is not pushed
 
   Scenario: Failure during deployment
-    Given an open pull request #129 from branch "feature/backend"
+    Given an open pull request #131 from branch "feature/backend"
     And all merges complete successfully
     And develop_auto is pushed to origin
     And npm run deploy:testing fails with exit code 1
@@ -678,6 +825,10 @@ Feature: Order of Operations
       | Post workflow started comment           |
       | Checkout repository                     |
       | Configure git identity                  |
+      | Check if develop_auto reset is needed   |
+      | Send approval request to Slack (if reset needed) |
+      | Wait for approval response (if reset needed) |
+      | Cancel if rejected (if applicable)      |
       | Prepare develop_auto and merge branches |
       | Comment on merge conflict (if needed)   |
       | Fail job on merge conflict (if needed)  |
@@ -1018,6 +1169,91 @@ Feature: Notification for Removed PRs
 
       If they still need testing in develop, they should re-run `develop deploy`.
       """
+```
+
+---
+
+## Feature: Slack Approval Integration
+
+```gherkin
+Feature: Slack Approval Integration
+  Approval requests should use Slack interactive components and webhooks
+
+  Background:
+    Given the workflow has access to SLACK_BOT_TOKEN secret
+    And the workflow has access to SLACK_CHANNEL_ID variable
+    And the workflow has access to SLACK_WEBHOOK_URL for responses
+    And the Slack bot has permission to post in the channel
+
+  Scenario: Send approval request with interactive buttons
+    Given a reset is required
+    When the approval request is sent
+    Then it should POST to https://slack.com/api/chat.postMessage
+    And it should include "Authorization: Bearer <token>" header
+    And it should target the channel specified in SLACK_CHANNEL_ID
+    And the message should use Block Kit format
+    And it should include approve and reject buttons with action IDs
+
+  Scenario: Handle approval button click
+    Given an approval request message is posted
+    When a team member clicks the "Approve" button
+    Then Slack should send a payload to the configured webhook URL
+    And the payload should include the action_id
+    And the payload should include the user who clicked
+    And the workflow should receive the approval response
+    And the workflow should continue with the reset
+
+  Scenario: Handle rejection button click
+    Given an approval request message is posted
+    When a team member clicks the "Reject" button
+    Then Slack should send a payload to the configured webhook URL
+    And the payload should include the rejection action
+    And the payload should include the user who clicked
+    And the workflow should receive the rejection response
+    And the workflow should cancel the deployment
+
+  Scenario: Update approval message after response
+    Given an approval request is sent
+    When a team member responds (approve or reject)
+    Then the original message should be updated
+    And the buttons should be disabled or removed
+    And the message should show who responded
+    And the message should show the decision (approved/rejected)
+    And the message should include a timestamp
+
+  Scenario: Store approval state for workflow to check
+    Given an approval request is sent
+    When a response is received via webhook
+    Then the response should be stored in a database or state file
+    And the workflow should poll or wait for this state
+    And the state should include: approved/rejected status
+    And the state should include: responding user
+    And the state should include: timestamp
+
+  Scenario: Approval request includes workflow context
+    Given a reset approval is needed
+    When constructing the Slack message
+    Then the message should include workflow run ID
+    And the message should include repository name
+    And the message should include PR number
+    And the message should include triggering user
+    And this context should be passed with button actions
+
+  Scenario: Webhook validates request authenticity
+    Given the webhook receives a Slack payload
+    When processing the request
+    Then it should verify the Slack signing secret
+    And it should validate the request timestamp
+    And it should reject invalid or replayed requests
+    And it should only process legitimate Slack requests
+
+  Scenario: Approval timeout mechanism
+    Given an approval request is sent at time T
+    When no response is received within configured timeout (e.g., 10 minutes)
+    Then the workflow should check elapsed time
+    And if timeout exceeded, treat as rejection
+    And update the Slack message to show timeout
+    And post cancellation comment to PR
 ```
 
 ---
