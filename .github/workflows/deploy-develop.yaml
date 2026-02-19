@@ -131,7 +131,10 @@ jobs:
               git push origin "$CONFLICT_BRANCH"
               
               # Create PR
-              PR_URL=$(gh pr create --base develop_auto --head "$CONFLICT_BRANCH" --title "Resolve conflicts: Sync main into develop_auto" --body "Merge conflict detected while syncing main into develop_auto for deployment. Please resolve conflicts here.")
+              if ! PR_URL=$(gh pr create --base develop_auto --head "$CONFLICT_BRANCH" --title "Resolve conflicts: Sync main into develop_auto" --body "Merge conflict detected while syncing main into develop_auto for deployment. Please resolve conflicts here."); then
+                echo "⚠️ Failed to create PR automatically (likely due to missing 'Allow GitHub Actions to create and approve pull requests' permission)."
+                PR_URL="${{ github.server_url }}/${{ github.repository }}/compare/develop_auto...${CONFLICT_BRANCH}?expand=1"
+              fi
               
               {
                 echo "success=false"
@@ -159,7 +162,10 @@ jobs:
             git push origin "$CONFLICT_BRANCH"
 
             # Create PR
-            PR_URL=$(gh pr create --base develop_auto --head "$CONFLICT_BRANCH" --title "Resolve conflicts: Merge ${PR_BRANCH} into develop_auto" --body "Merge conflict detected while merging ${PR_BRANCH} into develop_auto for deployment. Please resolve conflicts here.")
+            if ! PR_URL=$(gh pr create --base develop_auto --head "$CONFLICT_BRANCH" --title "Resolve conflicts: Merge ${PR_BRANCH} into develop_auto" --body "Merge conflict detected while merging ${PR_BRANCH} into develop_auto for deployment. Please resolve conflicts here."); then
+              echo "⚠️ Failed to create PR automatically (likely due to missing 'Allow GitHub Actions to create and approve pull requests' permission)."
+              PR_URL="${{ github.server_url }}/${{ github.repository }}/compare/develop_auto...${CONFLICT_BRANCH}?expand=1"
+            fi
             
             {
               echo "success=false"
