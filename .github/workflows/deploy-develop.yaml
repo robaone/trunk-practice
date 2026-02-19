@@ -4,8 +4,6 @@ on:
   issue_comment:
     types: [created]
 
-# Serialize all runs to prevent races on the shared develop_auto branch.
-# cancel-in-progress: false queues concurrent triggers rather than dropping them.
 concurrency:
   group: deploy-develop
   cancel-in-progress: false
@@ -13,10 +11,9 @@ concurrency:
 jobs:
   prepare:
     name: Prepare develop_auto branch
-    # Exact-match the command to avoid accidental triggers (e.g. "please don't develop deploy")
     if: >
       github.event.issue.pull_request != null &&
-      github.event.comment.body == 'develop deploy'
+      contains(github.event.comment.body, 'develop deploy')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -38,7 +35,7 @@ jobs:
               });
               const hasWrite = ['admin', 'write', 'maintain'].includes(data.permission);
               if (!hasWrite) {
-                core.setFailed(`@${context.actor} does not have write access and cannot trigger deployments (permission: ${data.permission}).`);
+                core.setFailed(`@${context.actor} does not have write access and cannot trigger deployments (permission: ${data.permission}). Required: write, admin, or maintain.`);
               }
             } catch (e) {
               core.setFailed(`Could not verify permissions for @${context.actor}: ${e.message}`);
@@ -56,25 +53,25 @@ jobs:
               repo: context.repo.repo,
               pull_number: context.issue.number,
             });
+            
+            if (pr.data.head.repo.fork) {
+              const body = [
+                '❌ **Deploy to develop failed**',
+                '',
+                'Pull requests from forked repositories are not supported for security reasons.',
+                'Please open a pull request from a branch on the main repository.',
+                '',
+                `**Workflow run:** ${process.env.RUN_URL}`,
+              ].join('\n');
 
-            const headRepo = pr.data.head.repo?.full_name;
-            const baseRepo = pr.data.base.repo.full_name;
-
-            if (headRepo !== baseRepo) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body: [
-                  '❌ **Deploy to develop is not supported for fork PRs**',
-                  '',
-                  'The `develop deploy` command only works on branches in the same repository.',
-                  'Please open your PR from a branch on this repo rather than a fork.',
-                  '',
-                  `**Workflow run:** ${process.env.RUN_URL}`,
-                ].join('\n'),
+                body,
               });
-              core.setFailed(`PR head (${headRepo}) is from a fork of ${baseRepo}. Fork PRs are not supported.`);
+              
+              core.setFailed('Fork PRs are not supported.');
               return;
             }
 
@@ -93,7 +90,7 @@ jobs:
               body: [
                 '🚀 **Deploy to develop triggered**',
                 '',
-                'Preparing `develop_auto` branch and queuing deployment...',
+                'Preparing `develop_auto` branch and queuing deployment to `connect-develop`...',
                 '',
                 `**Workflow run:** ${process.env.RUN_URL}`,
               ].join('\n'),
@@ -113,6 +110,8 @@ jobs:
       - name: Prepare develop_auto and merge branches
         id: merge
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR_BRANCH="${{ steps.get_pr.outputs.branch }}"
           git fetch --all
@@ -125,12 +124,22 @@ jobs:
             if ! git merge origin/main --no-edit -m "chore: sync main into develop_auto [auto]"; then
               CONFLICT_FILES=$(git diff --name-only --diff-filter=U)
               git merge --abort
+              
+              # Create conflict resolution branch
+              CONFLICT_BRANCH="conflict/sync-main-${GITHUB_RUN_ID}"
+              git checkout -b "$CONFLICT_BRANCH" origin/main
+              git push origin "$CONFLICT_BRANCH"
+              
+              # Create PR
+              PR_URL=$(gh pr create --base develop_auto --head "$CONFLICT_BRANCH" --title "Resolve conflicts: Sync main into develop_auto" --body "Merge conflict detected while syncing main into develop_auto for deployment. Please resolve conflicts here.")
+              
               {
                 echo "success=false"
                 echo "conflict_stage=main_to_develop_auto"
                 echo "conflict_files<<CONFLICT_EOF"
                 echo "$CONFLICT_FILES"
                 echo "CONFLICT_EOF"
+                echo "conflict_pr_url=$PR_URL"
               } >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -143,12 +152,22 @@ jobs:
           if ! git merge "origin/${PR_BRANCH}" --no-edit -m "chore: merge ${PR_BRANCH} into develop_auto for deploy [auto]"; then
             CONFLICT_FILES=$(git diff --name-only --diff-filter=U)
             git merge --abort
+
+            # Create conflict resolution branch
+            CONFLICT_BRANCH="conflict/merge-pr-${GITHUB_RUN_ID}"
+            git checkout -b "$CONFLICT_BRANCH" "origin/${PR_BRANCH}"
+            git push origin "$CONFLICT_BRANCH"
+
+            # Create PR
+            PR_URL=$(gh pr create --base develop_auto --head "$CONFLICT_BRANCH" --title "Resolve conflicts: Merge ${PR_BRANCH} into develop_auto" --body "Merge conflict detected while merging ${PR_BRANCH} into develop_auto for deployment. Please resolve conflicts here.")
+            
             {
               echo "success=false"
               echo "conflict_stage=pr_branch_to_develop_auto"
               echo "conflict_files<<CONFLICT_EOF"
               echo "$CONFLICT_FILES"
               echo "CONFLICT_EOF"
+              echo "conflict_pr_url=$PR_URL"
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -163,12 +182,14 @@ jobs:
         env:
           CONFLICT_STAGE: ${{ steps.merge.outputs.conflict_stage }}
           CONFLICT_FILES: ${{ steps.merge.outputs.conflict_files }}
+          CONFLICT_PR_URL: ${{ steps.merge.outputs.conflict_pr_url }}
           PR_BRANCH: ${{ steps.get_pr.outputs.branch }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
           script: |
             const stage = process.env.CONFLICT_STAGE;
             const conflictFiles = process.env.CONFLICT_FILES || '(could not determine files)';
+            const conflictPrUrl = process.env.CONFLICT_PR_URL;
             const prBranch = process.env.PR_BRANCH;
             const stageDescription = stage === 'main_to_develop_auto'
               ? 'merging `main` into `develop_auto`'
@@ -184,7 +205,9 @@ jobs:
               conflictFiles.trim(),
               '```',
               '',
-              'Please resolve the conflict locally, push your changes, and re-trigger by commenting `develop deploy`.',
+              `A conflict resolution pull request has been created: ${conflictPrUrl}`,
+              '',
+              'Please resolve the conflict in that pull request, merge it, and then re-trigger the deployment by commenting `develop deploy` here.',
               '',
               `**Workflow run:** ${process.env.RUN_URL}`,
             ].join('\n');
@@ -203,10 +226,14 @@ jobs:
           exit 1
 
   deploy:
-    name: Deploy develop_auto
+    name: Build and deploy develop_auto
     needs: prepare
     runs-on: ubuntu-latest
     environment: testing
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      deployments: write
 
     steps:
       - name: Checkout develop_auto
@@ -217,31 +244,30 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22.x
+          node-version: '22'
 
-      - name: Install dependencies
+      - name: Install dependencies and deploy
         run: |
           if [ -f "package.json" ]; then
+            echo "package.json found, running npm install..."
             npm install
+            
+            if grep -q '"deploy:testing":' package.json; then
+              echo "deploy:testing script found, executing..."
+              npm run deploy:testing
+            else
+              echo "No deploy:testing script found in package.json."
+              echo "Simulating deployment..."
+            fi
           else
-            echo "No package.json found, skipping install."
-          fi
-
-      - name: Deploy to develop environment
-        run: |
-          echo "Deploying develop_auto to develop environment..."
-          echo "Branch: develop_auto"
-          echo "Commit: $(git rev-parse HEAD)"
-          if [ -f "package.json" ] && [ "$(jq -r '.scripts["deploy:testing"]' package.json)" != "null" ]; then
-            npm run deploy:testing
-          else
-            echo "No deploy:testing script found — simulating deploy."
-            echo "Deploy complete."
+            echo "No package.json found."
+            echo "Simulating deployment..."
           fi
 
   notify:
     name: Notify PR of deployment result
     needs: [prepare, deploy]
+    # Always run this job as long as prepare succeeded (deploy may succeed or fail)
     if: always() && needs.prepare.result == 'success'
     runs-on: ubuntu-latest
     permissions:
@@ -263,7 +289,7 @@ jobs:
               body: [
                 '✅ **Successfully deployed to develop environment!**',
                 '',
-                'Branch `develop_auto` was synced from `main`, your PR branch was merged in, and the result was deployed.',
+                'Branch `develop_auto` was synced from `main`, your PR branch was merged in, and the result was deployed to `testing`.',
                 '',
                 `**Workflow run:** ${process.env.RUN_URL}`,
               ].join('\n'),
@@ -283,7 +309,7 @@ jobs:
               body: [
                 '❌ **Deploy to develop environment failed**',
                 '',
-                'The deployment step encountered an error. Check the workflow logs for details.',
+                'The build or deployment step encountered an error. Check the workflow logs for details.',
                 '',
                 `**Workflow run:** ${process.env.RUN_URL}`,
               ].join('\n'),
