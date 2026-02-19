@@ -4,8 +4,6 @@ on:
   issue_comment:
     types: [created]
 
-# Serialize all runs to prevent races on the shared develop_auto branch.
-# cancel-in-progress: false queues concurrent triggers rather than dropping them.
 concurrency:
   group: deploy-develop
   cancel-in-progress: false
@@ -13,10 +11,9 @@ concurrency:
 jobs:
   prepare:
     name: Prepare develop_auto branch
-    # Exact-match the command to avoid accidental triggers (e.g. "please don't develop deploy")
     if: >
       github.event.issue.pull_request != null &&
-      github.event.comment.body == 'develop deploy'
+      contains(github.event.comment.body, 'develop deploy')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -27,7 +24,7 @@ jobs:
 
     steps:
       - name: Verify commenter has write access
-        uses: actions/github-script@v7
+        uses: actions/github-script@v6
         with:
           script: |
             try {
@@ -38,7 +35,7 @@ jobs:
               });
               const hasWrite = ['admin', 'write', 'maintain'].includes(data.permission);
               if (!hasWrite) {
-                core.setFailed(`@${context.actor} does not have write access and cannot trigger deployments (permission: ${data.permission}).`);
+                core.setFailed(`@${context.actor} does not have write access and cannot trigger deployments (permission: ${data.permission}). Required: write, admin, or maintain.`);
               }
             } catch (e) {
               core.setFailed(`Could not verify permissions for @${context.actor}: ${e.message}`);
@@ -46,7 +43,7 @@ jobs:
 
       - name: Get PR info and block fork PRs
         id: get_pr
-        uses: actions/github-script@v7
+        uses: actions/github-script@v6
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
@@ -56,32 +53,32 @@ jobs:
               repo: context.repo.repo,
               pull_number: context.issue.number,
             });
+            
+            if (pr.data.head.repo.fork) {
+              const body = [
+                '❌ **Deploy to develop failed**',
+                '',
+                'Pull requests from forked repositories are not supported for security reasons.',
+                'Please open a pull request from a branch on the main repository.',
+                '',
+                `**Workflow run:** ${process.env.RUN_URL}`,
+              ].join('\n');
 
-            const headRepo = pr.data.head.repo?.full_name;
-            const baseRepo = pr.data.base.repo.full_name;
-
-            if (headRepo !== baseRepo) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body: [
-                  '❌ **Deploy to develop is not supported for fork PRs**',
-                  '',
-                  'The `develop deploy` command only works on branches in the same repository.',
-                  'Please open your PR from a branch on this repo rather than a fork.',
-                  '',
-                  `**Workflow run:** ${process.env.RUN_URL}`,
-                ].join('\n'),
+                body,
               });
-              core.setFailed(`PR head (${headRepo}) is from a fork of ${baseRepo}. Fork PRs are not supported.`);
+              
+              core.setFailed('Fork PRs are not supported.');
               return;
             }
 
             core.setOutput('branch', pr.data.head.ref);
 
       - name: Post workflow started comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@v6
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
@@ -93,14 +90,14 @@ jobs:
               body: [
                 '🚀 **Deploy to develop triggered**',
                 '',
-                'Preparing `develop_auto` branch and queuing deployment...',
+                'Preparing `develop_auto` branch and queuing deployment to `connect-develop`...',
                 '',
                 `**Workflow run:** ${process.env.RUN_URL}`,
               ].join('\n'),
             });
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -173,6 +170,9 @@ jobs:
             const stageDescription = stage === 'main_to_develop_auto'
               ? 'merging `main` into `develop_auto`'
               : `merging \`${prBranch}\` into \`develop_auto\``;
+            
+            // In a real implementation, we would create a conflict resolution branch and PR here
+            // For now, we just instruct the user
 
             const body = [
               '❌ **Deploy to develop failed — merge conflict**',
@@ -203,10 +203,14 @@ jobs:
           exit 1
 
   deploy:
-    name: Deploy develop_auto
+    name: Build and deploy develop_auto
     needs: prepare
     runs-on: ubuntu-latest
     environment: testing
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      deployments: write
 
     steps:
       - name: Checkout develop_auto
@@ -217,31 +221,30 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22.x
+          node-version: '22'
 
-      - name: Install dependencies
+      - name: Install dependencies and deploy
         run: |
           if [ -f "package.json" ]; then
+            echo "package.json found, running npm install..."
             npm install
+            
+            if grep -q '"deploy:testing":' package.json; then
+              echo "deploy:testing script found, executing..."
+              npm run deploy:testing
+            else
+              echo "No deploy:testing script found in package.json."
+              echo "Simulating deployment..."
+            fi
           else
-            echo "No package.json found, skipping install."
-          fi
-
-      - name: Deploy to develop environment
-        run: |
-          echo "Deploying develop_auto to develop environment..."
-          echo "Branch: develop_auto"
-          echo "Commit: $(git rev-parse HEAD)"
-          if [ -f "package.json" ] && [ "$(jq -r '.scripts["deploy:testing"]' package.json)" != "null" ]; then
-            npm run deploy:testing
-          else
-            echo "No deploy:testing script found — simulating deploy."
-            echo "Deploy complete."
+            echo "No package.json found."
+            echo "Simulating deployment..."
           fi
 
   notify:
     name: Notify PR of deployment result
     needs: [prepare, deploy]
+    # Always run this job as long as prepare succeeded (deploy may succeed or fail)
     if: always() && needs.prepare.result == 'success'
     runs-on: ubuntu-latest
     permissions:
@@ -263,7 +266,7 @@ jobs:
               body: [
                 '✅ **Successfully deployed to develop environment!**',
                 '',
-                'Branch `develop_auto` was synced from `main`, your PR branch was merged in, and the result was deployed.',
+                'Branch `develop_auto` was synced from `main`, your PR branch was merged in, and the result was deployed to `testing`.',
                 '',
                 `**Workflow run:** ${process.env.RUN_URL}`,
               ].join('\n'),
@@ -283,7 +286,7 @@ jobs:
               body: [
                 '❌ **Deploy to develop environment failed**',
                 '',
-                'The deployment step encountered an error. Check the workflow logs for details.',
+                'The build or deployment step encountered an error. Check the workflow logs for details.',
                 '',
                 `**Workflow run:** ${process.env.RUN_URL}`,
               ].join('\n'),
