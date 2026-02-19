@@ -24,7 +24,7 @@ jobs:
 
     steps:
       - name: Verify commenter has write access
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         with:
           script: |
             try {
@@ -43,7 +43,7 @@ jobs:
 
       - name: Get PR info and block fork PRs
         id: get_pr
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
@@ -78,7 +78,7 @@ jobs:
             core.setOutput('branch', pr.data.head.ref);
 
       - name: Post workflow started comment
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
@@ -97,7 +97,7 @@ jobs:
             });
 
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -110,6 +110,8 @@ jobs:
       - name: Prepare develop_auto and merge branches
         id: merge
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR_BRANCH="${{ steps.get_pr.outputs.branch }}"
           git fetch --all
@@ -122,12 +124,22 @@ jobs:
             if ! git merge origin/main --no-edit -m "chore: sync main into develop_auto [auto]"; then
               CONFLICT_FILES=$(git diff --name-only --diff-filter=U)
               git merge --abort
+              
+              # Create conflict resolution branch
+              CONFLICT_BRANCH="conflict/sync-main-${GITHUB_RUN_ID}"
+              git checkout -b "$CONFLICT_BRANCH" origin/main
+              git push origin "$CONFLICT_BRANCH"
+              
+              # Create PR
+              PR_URL=$(gh pr create --base develop_auto --head "$CONFLICT_BRANCH" --title "Resolve conflicts: Sync main into develop_auto" --body "Merge conflict detected while syncing main into develop_auto for deployment. Please resolve conflicts here.")
+              
               {
                 echo "success=false"
                 echo "conflict_stage=main_to_develop_auto"
                 echo "conflict_files<<CONFLICT_EOF"
                 echo "$CONFLICT_FILES"
                 echo "CONFLICT_EOF"
+                echo "conflict_pr_url=$PR_URL"
               } >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -140,12 +152,22 @@ jobs:
           if ! git merge "origin/${PR_BRANCH}" --no-edit -m "chore: merge ${PR_BRANCH} into develop_auto for deploy [auto]"; then
             CONFLICT_FILES=$(git diff --name-only --diff-filter=U)
             git merge --abort
+
+            # Create conflict resolution branch
+            CONFLICT_BRANCH="conflict/merge-pr-${GITHUB_RUN_ID}"
+            git checkout -b "$CONFLICT_BRANCH" "origin/${PR_BRANCH}"
+            git push origin "$CONFLICT_BRANCH"
+
+            # Create PR
+            PR_URL=$(gh pr create --base develop_auto --head "$CONFLICT_BRANCH" --title "Resolve conflicts: Merge ${PR_BRANCH} into develop_auto" --body "Merge conflict detected while merging ${PR_BRANCH} into develop_auto for deployment. Please resolve conflicts here.")
+            
             {
               echo "success=false"
               echo "conflict_stage=pr_branch_to_develop_auto"
               echo "conflict_files<<CONFLICT_EOF"
               echo "$CONFLICT_FILES"
               echo "CONFLICT_EOF"
+              echo "conflict_pr_url=$PR_URL"
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -160,19 +182,18 @@ jobs:
         env:
           CONFLICT_STAGE: ${{ steps.merge.outputs.conflict_stage }}
           CONFLICT_FILES: ${{ steps.merge.outputs.conflict_files }}
+          CONFLICT_PR_URL: ${{ steps.merge.outputs.conflict_pr_url }}
           PR_BRANCH: ${{ steps.get_pr.outputs.branch }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
           script: |
             const stage = process.env.CONFLICT_STAGE;
             const conflictFiles = process.env.CONFLICT_FILES || '(could not determine files)';
+            const conflictPrUrl = process.env.CONFLICT_PR_URL;
             const prBranch = process.env.PR_BRANCH;
             const stageDescription = stage === 'main_to_develop_auto'
               ? 'merging `main` into `develop_auto`'
               : `merging \`${prBranch}\` into \`develop_auto\``;
-            
-            // In a real implementation, we would create a conflict resolution branch and PR here
-            // For now, we just instruct the user
 
             const body = [
               '❌ **Deploy to develop failed — merge conflict**',
@@ -184,7 +205,9 @@ jobs:
               conflictFiles.trim(),
               '```',
               '',
-              'Please resolve the conflict locally, push your changes, and re-trigger by commenting `develop deploy`.',
+              `A conflict resolution pull request has been created: ${conflictPrUrl}`,
+              '',
+              'Please resolve the conflict in that pull request, merge it, and then re-trigger the deployment by commenting `develop deploy` here.',
               '',
               `**Workflow run:** ${process.env.RUN_URL}`,
             ].join('\n');
