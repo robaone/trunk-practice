@@ -405,7 +405,7 @@ jobs:
             });
 
       - name: Send Slack notification for removed PRs
-        if: needs.deploy.result == 'success' && needs.prepare.outputs.was_reset == 'true' && needs.prepare.outputs.removed_pr_count > '0'
+        if: needs.deploy.result == 'success' && needs.prepare.outputs.was_reset == 'true' && fromJSON(needs.prepare.outputs.removed_pr_count) > 0
         continue-on-error: true
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}

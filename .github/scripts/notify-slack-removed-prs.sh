@@ -30,81 +30,38 @@ REMOVED_TEXT=""
 while IFS='|' read -r pr_num branch author title; do
   [ -z "$pr_num" ] && continue
   PR_URL="$REPO_URL/pull/$pr_num"
-  # Escape special characters for JSON
-  title_escaped=$(echo "$title" | sed 's/"/\\"/g' | sed "s/'/\\'/g")
   REMOVED_TEXT+="• <$PR_URL|PR #$pr_num> - $branch ($author)\\n"
 done <<< "$REMOVED_PR_DATA"
 
 # Remove trailing \n
 REMOVED_TEXT="${REMOVED_TEXT%\\n}"
 
-# Escape special characters in triggering PR title
-TRIGGERING_TITLE_ESCAPED=$(echo "$TRIGGERING_TITLE" | sed 's/"/\\"/g' | sed "s/'/\\'/g")
+# Build Slack message payload using Block Kit (jq for correct JSON escaping)
+jq -n \
+  --arg channel "$SLACK_CHANNEL_ID" \
+  --arg removed_text "$REMOVED_TEXT" \
+  --arg repo_url "$REPO_URL" \
+  --arg triggering_pr "$TRIGGERING_PR" \
+  --arg triggering_branch "$TRIGGERING_BRANCH" \
+  --arg triggering_author "$TRIGGERING_AUTHOR" \
+  --arg workflow_url "$WORKFLOW_URL" \
+  '{
+    channel: $channel,
+    text: "Develop Environment Reset - PRs removed from develop_auto",
+    blocks: [
+      { type: "header", text: { type: "plain_text", text: "⚠️ Develop Environment Reset", emoji: true } },
+      { type: "section", text: { type: "mrkdwn", text: "The `develop_auto` branch was reset to `main` due to new merges." } },
+      { type: "section", text: { type: "mrkdwn", text: ("*Removed PRs:*\n" + $removed_text) } },
+      { type: "section", text: { type: "mrkdwn", text: ("*Triggered by:* <" + $repo_url + "/pull/" + $triggering_pr + "|PR #" + $triggering_pr + "> - " + $triggering_branch + " (" + $triggering_author + ")") } },
+      { type: "context", elements: [{ type: "mrkdwn", text: "💡 *Action needed:* If you still need to test in develop, comment `develop deploy` on your PR." }] },
+      { type: "actions", elements: [{ type: "button", text: { type: "plain_text", text: "View Workflow Run", emoji: true }, url: $workflow_url }] }
+    ]
+  }' > /tmp/slack-payload.json
 
-# Build Slack message payload using Block Kit
-cat > /tmp/slack-payload.json << EOF
-{
-  "channel": "$SLACK_CHANNEL_ID",
-  "text": "Develop Environment Reset - PRs removed from develop_auto",
-  "blocks": [
-    {
-      "type": "header",
-      "text": {
-        "type": "plain_text",
-        "text": "⚠️ Develop Environment Reset",
-        "emoji": true
-      }
-    },
-    {
-      "type": "section",
-      "text": {
-        "type": "mrkdwn",
-        "text": "The \`develop_auto\` branch was reset to \`main\` due to new merges."
-      }
-    },
-    {
-      "type": "section",
-      "text": {
-        "type": "mrkdwn",
-        "text": "*Removed PRs:*\\n$REMOVED_TEXT"
-      }
-    },
-    {
-      "type": "section",
-      "text": {
-        "type": "mrkdwn",
-        "text": "*Triggered by:* <$REPO_URL/pull/$TRIGGERING_PR|PR #$TRIGGERING_PR> - $TRIGGERING_BRANCH ($TRIGGERING_AUTHOR)"
-      }
-    },
-    {
-      "type": "context",
-      "elements": [
-        {
-          "type": "mrkdwn",
-          "text": "💡 *Action needed:* If you still need to test in develop, comment \`develop deploy\` on your PR."
-        }
-      ]
-    },
-    {
-      "type": "actions",
-      "elements": [
-        {
-          "type": "button",
-          "text": {
-            "type": "plain_text",
-            "text": "View Workflow Run",
-            "emoji": true
-          },
-          "url": "$WORKFLOW_URL"
-        }
-      ]
-    }
-  ]
-}
-EOF
-
-echo "Slack payload:"
-cat /tmp/slack-payload.json
+if [ "$SLACK_DEBUG" = "true" ]; then
+  echo "Slack payload:"
+  cat /tmp/slack-payload.json
+fi
 
 # Send to Slack
 echo ""

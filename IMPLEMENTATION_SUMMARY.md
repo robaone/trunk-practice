@@ -164,7 +164,7 @@ The `prepare` job now outputs:
 ### Scenario 1: First deploy after main update (with abandoned PR)
 
 1. **T0**: PR #100 deployed → `develop_auto = main + PR#100`
-2. **T1**: PR #100 closed without merge (abandoned)
+2. **T1**: No merge to main; PR #100 is still open (not merged)
 3. **T2**: PR #200 merged to main → `main` advances
 4. **T3**: PR #300 triggers deploy:
    - Workflow detects: `main` has new commits

@@ -306,6 +306,7 @@ Feature: Develop Auto Branch Preparation
     And previous PR changes should be discarded
     And no merge from main should be performed
 
+  # Reachable when no reset runs (e.g. develop_auto already includes main and is behind due to edge cases).
   Scenario: Fast-forward merge of main into develop_auto
     Given the develop_auto branch exists
     And develop_auto is behind main with no conflicts
@@ -314,6 +315,7 @@ Feature: Develop Auto Branch Preparation
     Then main should merge cleanly into develop_auto
     And the merge should complete successfully
 
+  # Reachable when no reset runs; describes merge behavior when we are not resetting.
   Scenario: Three-way merge of main into develop_auto
     Given the develop_auto branch exists
     And develop_auto has diverged from main
@@ -1182,7 +1184,7 @@ Feature: Slack Approval Integration
   Background:
     Given the workflow has access to SLACK_BOT_TOKEN secret
     And the workflow has access to SLACK_CHANNEL_ID variable
-    And the workflow has access to SLACK_WEBHOOK_URL for responses
+    And the Slack app is configured for socket mode for responses
     And the Slack bot has permission to post in the channel
 
   Scenario: Send approval request with interactive buttons
@@ -1197,7 +1199,7 @@ Feature: Slack Approval Integration
   Scenario: Handle approval button click
     Given an approval request message is posted
     When a team member clicks the "Approve" button
-    Then Slack should send a payload to the configured webhook URL
+    Then Slack should deliver the payload via socket mode
     And the payload should include the action_id
     And the payload should include the user who clicked
     And the workflow should receive the approval response
@@ -1206,7 +1208,7 @@ Feature: Slack Approval Integration
   Scenario: Handle rejection button click
     Given an approval request message is posted
     When a team member clicks the "Reject" button
-    Then Slack should send a payload to the configured webhook URL
+    Then Slack should deliver the payload via socket mode
     And the payload should include the rejection action
     And the payload should include the user who clicked
     And the workflow should receive the rejection response
@@ -1219,12 +1221,11 @@ Feature: Slack Approval Integration
     And the buttons should be disabled or removed
     And the message should show who responded
     And the message should show the decision (approved/rejected)
-    And the message should include a timestamp
 
   Scenario: Store approval state for workflow to check
     Given an approval request is sent
-    When a response is received via webhook
-    Then the response should be stored in a database or state file
+    When a response is received via socket mode
+    Then the response may be stored in an env var for the rest of the workflow
     And the workflow should poll or wait for this state
     And the state should include: approved/rejected status
     And the state should include: responding user

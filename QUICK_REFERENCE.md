@@ -78,7 +78,7 @@
 Time 0: PR #100 deploys
   develop_auto = main + PR#100
 
-Time 1: PR #100 closed (not merged)
+Time 1: No changes; PR #100 is still open (not merged)
   develop_auto = main + PR#100  (unchanged)
 
 Time 2: PR #200 merged to main
@@ -170,8 +170,8 @@ Only sent when: `WAS_RESET=true` AND `REMOVED_PRs > 0`
 
 | Command | Triggers | Result |
 |---------|----------|--------|
-| `develop deploy` | Exact match in PR comment | Full deploy workflow |
-| `please don't develop deploy` | Contains but not exact | No trigger |
+| `develop deploy` | Comment contains `develop deploy` | Full deploy workflow |
+| `please don't develop deploy` | Also contains `develop deploy` | Full deploy workflow (avoid this phrasing if you don't want a deploy) |
 
 ## Multi-PR Testing
 
