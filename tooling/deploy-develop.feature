@@ -220,6 +220,8 @@ Feature: Main to Develop Auto Merge Conflicts
     Then the merge should fail
     And the conflicting files should be identified
     And the merge should be aborted
+    And a merge conflict resolution branch should be created
+    And a merge conflict resolution pull request should be created
     And the workflow should output conflict details
     And the workflow should set success=false
     And the workflow should set conflict_stage=main_to_develop_auto
@@ -231,7 +233,7 @@ Feature: Main to Develop Auto Merge Conflicts
     Then a comment should be posted on the PR
     And the comment should indicate merge conflict with main
     And the comment should list the conflicting files
-    And the comment should instruct to resolve conflicts locally
+    And the comment should instruct to resolve the conflict in the merge conflict pull request
     And the comment should mention re-triggering with "develop deploy"
     And the comment should include the workflow run URL
 
@@ -291,8 +293,11 @@ Feature: PR Branch to Develop Auto Merge Conflicts
     When the PR branch merge step runs
     Then the merge should fail
     And the conflicting files should be identified
+    And a merge conflict resolution branch should be created
+    And a pull request should be created from the conflict resolution branch to develop_auto
     And the merge should be aborted
     And the workflow should output conflict details
+    And the merge conflict resolution PR link should be included in the output
     And the workflow should set success=false
     And the workflow should set conflict_stage=pr_branch_to_develop_auto
 
@@ -304,7 +309,7 @@ Feature: PR Branch to Develop Auto Merge Conflicts
     Then a comment should be posted on the PR
     And the comment should indicate conflict merging the PR branch
     And the comment should list the conflicting files
-    And the comment should instruct to resolve conflicts locally
+    And the comment should instruct to resolve the conflict in the conflict resolution pull request
     And the comment should mention pushing changes and re-triggering
     And the comment should include the workflow run URL
 
@@ -625,7 +630,8 @@ Feature: Complete Workflow Failure Paths
     When the workflow executes
     Then main merge into develop_auto fails
     And conflicting files are identified
-    And a conflict comment is posted with file list
+    And a merge conflict resolution branch and PR are created
+    And a conflict comment is posted with file list and PR link
     And the workflow exits with failure
     And develop_auto is not pushed
 
@@ -637,7 +643,8 @@ Feature: Complete Workflow Failure Paths
     When the workflow executes
     Then PR branch merge into develop_auto fails
     And conflicting files are identified
-    And a conflict comment is posted
+    And a merge conflict resolution branch and PR are created
+    And a conflict comment is posted with link to the merge conflict PR
     And the workflow exits with failure
     And develop_auto is not pushed
 
@@ -808,6 +815,13 @@ Feature: Error Messages and User Feedback
     And the comment should provide resolution instructions
     And the comment should mention re-triggering after fix
 
+  Scenario: Merge conflict error creates branch and pull request
+    Given a merge conflict occurs
+    When the conflict is detected
+    Then a merge conflict resolution branch should be created
+    And a merge conflict resolution pull request should be created
+    And the pull request should explain it is a merge conflict resolution branch
+
   Scenario: Deployment failure provides troubleshooting info
     Given the deploy job fails
     When the failure comment is posted
@@ -862,6 +876,7 @@ Feature: Workflow Outputs and Artifacts
     When the merge is aborted
     Then the output should include "conflict_stage"
     And the output should include "conflict_files"
+    And the output should include a link to the merge conflict resolution pull request
     And these outputs should be used in the comment step
 ```
 
