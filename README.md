@@ -21,3 +21,7 @@ To enable the automated conflict resolution workflow, you must allow GitHub Acti
 5.  Ensure **Read and write permissions** is selected.
 6.  **Crucially**, check the box that says **Allow GitHub Actions to create and approve pull requests**.
 7.  Click the **Save** button.
+
+## Feature Tests
+
+A feature test file explains all of the functionality
