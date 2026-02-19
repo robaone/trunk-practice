@@ -853,6 +853,283 @@ Feature: Environment Protection
 
 ---
 
+## Feature: Develop Auto Reset on Main Changes
+
+```gherkin
+Feature: Develop Auto Reset on Main Changes
+  develop_auto should reset to main when new commits are detected in main
+
+  Scenario: Reset develop_auto when main has new commits
+    Given develop_auto exists and contains PR #100 and PR #101 changes
+    And main has been updated with new merged PRs since last sync
+    When a new deploy is triggered for PR #102
+    Then the workflow should detect main has new commits
+    And develop_auto should be reset to main (not merged)
+    And previous PR changes (#100, #101) should be discarded
+    And only PR #102 should be merged into the fresh develop_auto
+    And the reset should be logged in workflow output
+
+  Scenario: Merge main when main is unchanged
+    Given develop_auto exists and contains PR #200 changes
+    And main has no new commits since last sync
+    When a new deploy is triggered for PR #201
+    Then the workflow should detect main is unchanged
+    And main should be merged into develop_auto (preserving PR #200)
+    And PR #201 should be merged
+    And develop_auto should contain both PR #200 and PR #201
+
+  Scenario: Comment indicates reset occurred
+    Given develop_auto was reset due to main changes
+    When the deployment succeeds
+    Then the success comment should mention develop_auto was reset
+    And the comment should list that only the current PR was deployed
+    And the comment should suggest re-deploying other PRs if needed
+
+  Scenario: Comment indicates incremental merge
+    Given develop_auto was incrementally updated (no reset)
+    When the deployment succeeds
+    Then the success comment should indicate develop_auto contains multiple PRs
+    And the comment should note this is testing multiple changes together
+
+  Scenario: First deployment after main update removes abandoned PR
+    Given PR #300 was deployed to develop_auto
+    And PR #300 was later closed without merging
+    And develop_auto still contains PR #300 changes
+    When a commit is merged to main
+    And a new deploy is triggered for PR #301
+    Then develop_auto should be reset to main
+    And PR #300 changes should be removed automatically
+    And only PR #301 should be present in develop_auto
+```
+
+---
+
+## Feature: Notification for Removed PRs
+
+```gherkin
+Feature: Notification for Removed PRs
+  When develop_auto is reset, developers should be notified of removed PRs
+
+  Background:
+    Given the workflow uses git history to track deployed PRs
+    And merge commits follow the pattern "chore: merge <branch> into develop_auto for deploy [auto]"
+
+  Scenario: Identify removed PRs from git history
+    Given develop_auto contains merge commits for branches: feature/a, feature/b, feature/c
+    And main has new commits requiring reset
+    When the prepare step detects the reset condition
+    Then the workflow should parse git log between main and develop_auto
+    And extract branch names from merge commit messages
+    And the extracted branches should be: feature/a, feature/b, feature/c
+
+  Scenario: Query GitHub to find open PRs for removed branches
+    Given removed branches are: feature/a, feature/b, feature/c
+    When the workflow queries GitHub for these branches
+    Then it should find PR numbers for each branch
+    And it should check if each PR is still open
+    And only open PRs should be included in notifications
+
+  Scenario: Filter out closed/merged PRs from notifications
+    Given develop_auto contained PR #100 (open), PR #101 (closed), PR #102 (merged)
+    And all three are being removed due to reset
+    When the workflow identifies PRs to notify
+    Then PR #100 should be included in notifications
+    And PR #101 should be excluded (closed)
+    And PR #102 should be excluded (merged)
+
+  Scenario: Comment on triggering PR about reset
+    Given develop_auto was reset due to main changes
+    And removed open PRs are: #100, #101, #102
+    When the deployment succeeds
+    And the success comment is posted on the triggering PR
+    Then the comment should indicate develop_auto was reset
+    And the comment should list removed PR numbers with authors
+    And the comment should explain why the reset happened
+    And the comment should suggest affected developers re-deploy if needed
+
+  Scenario: Post Slack notification about removed PRs
+    Given develop_auto was reset due to main changes
+    And removed open PRs are: #100 (@alice), #101 (@bob)
+    And the triggering PR is #200 (@charlie)
+    When the notification step runs
+    Then a Slack message should be posted to the configured channel
+    And the message should mention the reset occurred
+    And the message should list removed PRs with author mentions
+    And the message should indicate which PR triggered the reset
+    And the message should link to the workflow run
+    And the message should link to each removed PR
+
+  Scenario: No notification when no PRs are removed
+    Given develop_auto is reset to main
+    But no other PRs were previously deployed
+    When the deployment succeeds
+    Then the success comment should indicate fresh deploy
+    And no Slack notification about removed PRs should be sent
+    And the comment should not mention removed PRs
+
+  Scenario: No notification when develop_auto is not reset
+    Given main has no new commits
+    And develop_auto is merged incrementally (not reset)
+    When the deployment succeeds
+    Then the comment should indicate incremental merge
+    And no Slack notification about removed PRs should be sent
+
+  Scenario: Handle GitHub API failures gracefully
+    Given develop_auto was reset
+    And removed branches are identified
+    When querying GitHub API for PR numbers fails
+    Then the workflow should log the error
+    And the deployment should still succeed
+    And the PR comment should mention unable to identify removed PRs
+    And no Slack notification should be sent
+
+  Scenario: Slack notification includes all context
+    Given PR #100 (feature/auth) by @alice is removed
+    And PR #101 (feature/payments) by @bob is removed
+    And PR #200 (feature/search) by @charlie triggered the reset
+    When the Slack notification is sent
+    Then the message format should be:
+      """
+      ⚠️ Develop Environment Reset
+
+      The `develop_auto` branch was reset to `main` due to new merges.
+
+      **Removed PRs:**
+      • PR #100 - feature/auth (@alice) - [View PR](...)
+      • PR #101 - feature/payments (@bob) - [View PR](...)
+
+      **Triggered by:** PR #200 - feature/search (@charlie) - [View PR](...)
+
+      **Action needed:** If you still need to test in develop, comment `develop deploy` on your PR.
+
+      [View Workflow Run](...)
+      """
+
+  Scenario: Comment format for removed PRs
+    Given PR #100 by @alice and PR #101 by @bob are removed
+    When the success comment is posted on the triggering PR
+    Then the comment should include a section:
+      """
+      ⚠️ **Note:** `develop_auto` was reset to `main` (new commits detected)
+
+      The following PRs were previously deployed but have been cleared:
+      - PR #100 (@alice)
+      - PR #101 (@bob)
+
+      If they still need testing in develop, they should re-run `develop deploy`.
+      """
+```
+
+---
+
+## Feature: Slack Integration for Removed PR Notifications
+
+```gherkin
+Feature: Slack Integration for Removed PR Notifications
+  Slack notifications should be sent using bot token to a configured channel
+
+  Background:
+    Given the workflow has access to SLACK_BOT_TOKEN secret
+    And the workflow has access to SLACK_CHANNEL_ID variable
+    And the Slack bot has permission to post in the channel
+
+  Scenario: Slack bot token authentication
+    Given the SLACK_BOT_TOKEN is configured
+    When the workflow sends a Slack notification
+    Then it should use the Slack Web API
+    And it should POST to https://slack.com/api/chat.postMessage
+    And it should include "Authorization: Bearer <token>" header
+    And it should target the channel specified in SLACK_CHANNEL_ID
+
+  Scenario: Slack message uses block kit format
+    Given removed PRs exist to notify about
+    When building the Slack message payload
+    Then the message should use Block Kit JSON format
+    And it should include a header block with warning emoji
+    And it should include section blocks for removed PRs
+    And it should include a context block for action instructions
+    And it should include a button linking to the workflow run
+
+  Scenario: Slack message without user mentions
+    Given PR #100 by alice and PR #101 by bob are removed
+    When the Slack message is formatted
+    Then it should display usernames as plain text
+    And it should not use Slack user ID mentions
+    And usernames should appear as "alice" not "<@U123ABC>"
+
+  Scenario: Slack notification sent after successful deployment
+    Given the prepare job completed with reset
+    And removed PRs were identified
+    And the deploy job succeeded
+    When the notify job runs
+    Then it should post the GitHub comment first
+    And then it should send the Slack notification
+    And the Slack send should be a separate step
+
+  Scenario: Slack notification fails silently
+    Given the notify job needs to send Slack notification
+    When the Slack API call fails
+    Then the error should be logged
+    And the workflow should continue
+    And the overall job should still succeed
+    And the GitHub comment should still be posted
+
+  Scenario: Slack notification skipped when no removed PRs
+    Given develop_auto was not reset
+    Or no open PRs were removed
+    When the notify job runs
+    Then the Slack notification step should be skipped
+    And no API call to Slack should be made
+
+  Scenario: Slack notification step uses continue-on-error
+    Given the Slack notification step is defined
+    Then it should have continue-on-error set to true
+    And step failure should not affect job status
+    And subsequent steps should still run
+
+  Scenario: Missing Slack configuration handled gracefully
+    Given SLACK_BOT_TOKEN is not configured
+    Or SLACK_CHANNEL_ID is not configured
+    When the Slack notification step runs
+    Then it should detect missing configuration
+    And it should log a warning
+    And it should skip the notification
+    And the workflow should continue successfully
+
+  Scenario: Slack message includes all required information
+    Given PR #100 (feature/auth, alice) and PR #101 (feature/pay, bob) removed
+    And PR #200 (feature/search, charlie) triggered the reset
+    And the workflow run ID is 123456
+    And the repository is org/repo
+    When the Slack message is constructed
+    Then it should include:
+      | Field                    | Value                                           |
+      | Header                   | ⚠️ Develop Environment Reset                   |
+      | Explanation              | develop_auto reset to main due to new merges    |
+      | Removed PR #100          | PR #100 - feature/auth (alice) with link        |
+      | Removed PR #101          | PR #101 - feature/pay (bob) with link           |
+      | Triggering PR            | PR #200 - feature/search (charlie) with link    |
+      | Action instruction       | Comment "develop deploy" to redeploy            |
+      | Workflow link button     | Link to github.com/org/repo/actions/runs/123456 |
+
+  Scenario: Slack API response validation
+    Given a Slack notification is sent
+    When the Slack API responds
+    Then the workflow should check response.ok field
+    And if ok is false, it should log the error message
+    And if ok is true, it should log success
+    And response validation should not throw errors
+
+  Scenario: Channel ID format validation
+    Given SLACK_CHANNEL_ID is set
+    When the notification step starts
+    Then it should accept channel IDs starting with C
+    And it should accept channel IDs starting with G (private channels)
+    And it should log the channel ID being used (for debugging)
+```
+
+---
+
 ## Feature: Workflow Outputs and Artifacts
 
 ```gherkin
