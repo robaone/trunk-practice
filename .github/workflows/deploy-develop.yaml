@@ -9,11 +9,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  prepare:
-    name: Prepare develop_auto branch
+  check-reset-needed:
+    name: Check if develop_auto reset is needed
     if: >
       github.event.issue.pull_request != null &&
-      contains(github.event.comment.body, 'develop deploy')
+      (
+        github.event.comment.body == 'develop deploy' ||
+        startsWith(github.event.comment.body, 'develop deploy\n') ||
+        endsWith(github.event.comment.body, '\ndevelop deploy') ||
+        contains(github.event.comment.body, '\ndevelop deploy\n')
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -24,9 +29,10 @@ jobs:
       pr_number: ${{ steps.get_pr.outputs.number }}
       pr_author: ${{ steps.get_pr.outputs.author }}
       pr_title: ${{ steps.get_pr.outputs.title }}
-      was_reset: ${{ steps.merge.outputs.was_reset }}
-      removed_pr_count: ${{ steps.merge.outputs.removed_pr_count }}
-      removed_pr_data: ${{ steps.merge.outputs.removed_pr_data }}
+      reset_needed: ${{ steps.check_reset.outputs.reset_needed }}
+      removed_pr_data: ${{ steps.check_reset.outputs.removed_pr_data }}
+      removed_pr_count: ${{ steps.check_reset.outputs.removed_pr_count }}
+      removed_pr_summary: ${{ steps.check_reset.outputs.removed_pr_summary }}
 
     steps:
       - name: Verify commenter has write access
@@ -111,23 +117,17 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configure git identity
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Prepare develop_auto and merge branches
-        id: merge
+      - name: Check if develop_auto reset is needed
+        id: check_reset
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          PR_BRANCH="${{ steps.get_pr.outputs.branch }}"
           git fetch --all
 
-          # --- Step 1: Check if we need to reset develop_auto ---
-          WAS_RESET=false
+          RESET_NEEDED=false
           REMOVED_PR_DATA=""
+          REMOVED_PR_SUMMARY=""
           
           if git ls-remote --exit-code --heads origin develop_auto > /dev/null 2>&1; then
             echo "develop_auto exists — checking if main has new commits..."
@@ -136,8 +136,9 @@ jobs:
             NEW_COMMITS=$(git log origin/develop_auto..origin/main --oneline 2>/dev/null || echo "")
             
             if [ -n "$NEW_COMMITS" ]; then
-              echo "✨ Main has new commits since last sync — resetting develop_auto to main"
+              echo "✨ Main has new commits since last sync — reset will be needed"
               echo "$NEW_COMMITS"
+              RESET_NEEDED=true
               
               # BEFORE resetting, identify which PRs will be removed
               echo "🔍 Identifying PRs that will be removed..."
@@ -158,10 +159,114 @@ jobs:
                   if [ -n "$PR_NUM" ]; then
                     echo "    Found open PR #$PR_NUM by $PR_AUTHOR"
                     REMOVED_PR_DATA+="$PR_NUM|$branch|$PR_AUTHOR|$PR_TITLE"$'\n'
+                    REMOVED_PR_SUMMARY+="• PR #${PR_NUM} - ${branch} (@${PR_AUTHOR})"$'\n'
                   fi
                 fi
               done
-              
+            else
+              echo "📦 Main unchanged — no reset needed"
+              RESET_NEEDED=false
+            fi
+          else
+            echo "develop_auto does not exist — will be created from main (no approval needed)"
+            RESET_NEEDED=false
+          fi
+          
+          # Output results
+          echo "reset_needed=$RESET_NEEDED" >> "$GITHUB_OUTPUT"
+          
+          if [ "$RESET_NEEDED" = "true" ] && [ -n "$REMOVED_PR_DATA" ]; then
+            # Count non-empty lines
+            REMOVED_COUNT=$(echo "$REMOVED_PR_DATA" | grep -c '|' || echo "0")
+            echo "removed_pr_count=$REMOVED_COUNT" >> "$GITHUB_OUTPUT"
+            echo "removed_pr_data<<EOF" >> "$GITHUB_OUTPUT"
+            echo "$REMOVED_PR_DATA" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+            echo "removed_pr_summary<<EOF" >> "$GITHUB_OUTPUT"
+            echo "$REMOVED_PR_SUMMARY" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+            echo "📊 Found $REMOVED_COUNT open PR(s) that will be removed"
+          else
+            echo "removed_pr_count=0" >> "$GITHUB_OUTPUT"
+            echo "removed_pr_data=" >> "$GITHUB_OUTPUT"
+            echo "removed_pr_summary=" >> "$GITHUB_OUTPUT"
+          fi
+
+  request-reset-approval:
+    name: Request approval to reset develop_auto
+    needs: check-reset-needed
+    if: needs.check-reset-needed.outputs.reset_needed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Slack Approval
+        uses: TigerWest/slack-approval@v1.1.0
+        env:
+          SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+        timeout-minutes: 10
+        with:
+          approvers: ${{ vars.SLACK_APPROVERS }}
+          custom-message: |
+            🔄 *Reset develop_auto branch?*
+            
+            Main has new commits. Resetting `develop_auto` will remove the following PRs:
+            
+            ${{ needs.check-reset-needed.outputs.removed_pr_summary }}
+            
+            *Triggered by:* PR #${{ needs.check-reset-needed.outputs.pr_number }} (@${{ needs.check-reset-needed.outputs.pr_author }})
+            *Workflow:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  prepare:
+    name: Prepare develop_auto branch
+    needs: [check-reset-needed, request-reset-approval]
+    if: |
+      always() &&
+      needs.check-reset-needed.result == 'success' &&
+      (needs.request-reset-approval.result == 'success' || needs.request-reset-approval.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      pr_branch: ${{ needs.check-reset-needed.outputs.pr_branch }}
+      pr_number: ${{ needs.check-reset-needed.outputs.pr_number }}
+      pr_author: ${{ needs.check-reset-needed.outputs.pr_author }}
+      pr_title: ${{ needs.check-reset-needed.outputs.pr_title }}
+      was_reset: ${{ steps.merge.outputs.was_reset }}
+      removed_pr_count: ${{ needs.check-reset-needed.outputs.removed_pr_count }}
+      removed_pr_data: ${{ needs.check-reset-needed.outputs.removed_pr_data }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Prepare develop_auto and merge branches
+        id: merge
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RESET_NEEDED: ${{ needs.check-reset-needed.outputs.reset_needed }}
+        run: |
+          PR_BRANCH="${{ needs.check-reset-needed.outputs.pr_branch }}"
+          git fetch --all
+
+          # --- Step 1: Create or reset develop_auto ---
+          WAS_RESET=false
+          
+          if git ls-remote --exit-code --heads origin develop_auto > /dev/null 2>&1; then
+            if [ "$RESET_NEEDED" = "true" ]; then
+              echo "✨ Resetting develop_auto to main (approved)"
               git checkout -B develop_auto origin/main
               WAS_RESET=true
             else
@@ -235,19 +340,6 @@ jobs:
           # --- Step 4: Output results ---
           echo "success=true" >> "$GITHUB_OUTPUT"
           echo "was_reset=$WAS_RESET" >> "$GITHUB_OUTPUT"
-          
-          if [ "$WAS_RESET" = "true" ] && [ -n "$REMOVED_PR_DATA" ]; then
-            # Count non-empty lines
-            REMOVED_COUNT=$(echo "$REMOVED_PR_DATA" | grep -c '|' || echo "0")
-            echo "removed_pr_count=$REMOVED_COUNT" >> "$GITHUB_OUTPUT"
-            echo "removed_pr_data<<EOF" >> "$GITHUB_OUTPUT"
-            echo "$REMOVED_PR_DATA" >> "$GITHUB_OUTPUT"
-            echo "EOF" >> "$GITHUB_OUTPUT"
-            echo "📊 Removed $REMOVED_COUNT open PR(s) from develop_auto"
-          else
-            echo "removed_pr_count=0" >> "$GITHUB_OUTPUT"
-            echo "removed_pr_data=" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Comment on merge conflict
         if: steps.merge.outputs.success == 'false'
@@ -256,7 +348,7 @@ jobs:
           CONFLICT_STAGE: ${{ steps.merge.outputs.conflict_stage }}
           CONFLICT_FILES: ${{ steps.merge.outputs.conflict_files }}
           CONFLICT_PR_URL: ${{ steps.merge.outputs.conflict_pr_url }}
-          PR_BRANCH: ${{ steps.get_pr.outputs.branch }}
+          PR_BRANCH: ${{ needs.check-reset-needed.outputs.pr_branch }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
           script: |
@@ -288,7 +380,7 @@ jobs:
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number,
+              issue_number: ${{ needs.prepare.outputs.pr_number }},
               body,
             });
 
@@ -298,9 +390,47 @@ jobs:
           echo "Merge conflict detected. See PR comment for details."
           exit 1
 
+  notify-approval-rejected:
+    name: Notify that approval was rejected or timed out
+    needs: [check-reset-needed, request-reset-approval]
+    if: |
+      always() &&
+      needs.check-reset-needed.result == 'success' &&
+      needs.request-reset-approval.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Comment on PR about rejection
+        uses: actions/github-script@v7
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.check-reset-needed.outputs.pr_number }},
+              body: [
+                '🚫 **Deploy to develop cancelled**',
+                '',
+                'The reset of `develop_auto` was rejected or timed out during the approval process.',
+                '',
+                'The `develop_auto` branch was not modified. If you still want to deploy:',
+                '1. Wait for the conflicting PRs to be resolved or merged',
+                '2. Re-trigger the deployment by commenting `develop deploy`',
+                '',
+                `**Workflow run:** ${process.env.RUN_URL}`,
+              ].join('\n'),
+            });
+
   deploy:
     name: Build and deploy develop_auto
-    needs: prepare
+    needs: [check-reset-needed, request-reset-approval, prepare]
+    if: |
+      always() &&
+      needs.prepare.result == 'success'
     runs-on: ubuntu-latest
     environment: testing
     timeout-minutes: 60
@@ -339,7 +469,7 @@ jobs:
 
   notify:
     name: Notify PR of deployment result
-    needs: [prepare, deploy]
+    needs: [check-reset-needed, request-reset-approval, prepare, deploy]
     # Always run this job as long as prepare succeeded (deploy may succeed or fail)
     if: always() && needs.prepare.result == 'success'
     runs-on: ubuntu-latest
@@ -400,7 +530,7 @@ jobs:
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number,
+              issue_number: ${{ needs.prepare.outputs.pr_number }},
               body: body.join('\n'),
             });
 
@@ -431,7 +561,7 @@ jobs:
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number,
+              issue_number: ${{ needs.prepare.outputs.pr_number }},
               body: [
                 '❌ **Deploy to develop environment failed**',
                 '',
@@ -451,7 +581,7 @@ jobs:
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number,
+              issue_number: ${{ needs.prepare.outputs.pr_number }},
               body: [
                 '⚠️ **Deploy to develop environment was cancelled**',
                 '',
