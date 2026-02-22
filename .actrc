@@ -1,0 +1,20 @@
+# act configuration file
+# This configures act to run GitHub Actions locally
+
+# Use medium size image (includes common tools)
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+
+# Enable verbose mode by default
+# --verbose
+
+# Reuse containers for speed (comment out for clean runs)
+# --reuse
+
+# Allow local container architecture
+--container-architecture linux/amd64
+
+# Set default secrets (create .secrets file for real values)
+# --secret-file .secrets
+
+# Set default environment variables (create .env file for real values)
+# --env-file .env

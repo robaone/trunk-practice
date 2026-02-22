@@ -1,0 +1,29 @@
+{
+  "action": "created",
+  "issue": {
+    "number": 456,
+    "title": "Bug: Something is broken",
+    "user": {
+      "login": "test-user"
+    }
+  },
+  "comment": {
+    "id": 3,
+    "body": "develop deploy",
+    "user": {
+      "login": "test-user"
+    },
+    "created_at": "2026-02-21T12:00:00Z"
+  },
+  "repository": {
+    "name": "trunk-practice",
+    "full_name": "VirdocsSoftware/trunk-practice",
+    "owner": {
+      "login": "VirdocsSoftware"
+    },
+    "default_branch": "main"
+  },
+  "sender": {
+    "login": "test-user"
+  }
+}
