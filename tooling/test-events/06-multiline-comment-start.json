@@ -1,0 +1,33 @@
+{
+  "action": "created",
+  "issue": {
+    "number": 200,
+    "title": "Test PR: Feature from branch",
+    "pull_request": {
+      "url": "https://api.github.com/repos/VirdocsSoftware/trunk-practice/pulls/200"
+    },
+    "user": {
+      "login": "test-user"
+    }
+  },
+  "comment": {
+    "id": 6,
+    "body": "develop deploy
+with additional context",
+    "user": {
+      "login": "test-user"
+    },
+    "created_at": "2026-02-21T12:00:00Z"
+  },
+  "repository": {
+    "name": "trunk-practice",
+    "full_name": "VirdocsSoftware/trunk-practice",
+    "owner": {
+      "login": "VirdocsSoftware"
+    },
+    "default_branch": "main"
+  },
+  "sender": {
+    "login": "test-user"
+  }
+}
